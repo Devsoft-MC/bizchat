@@ -4,6 +4,10 @@
   "cleanUrls": true,
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "https://api.sahiproducts.com/bizchat/api/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

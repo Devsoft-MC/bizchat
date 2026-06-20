@@ -165,7 +165,9 @@ Facility and smart office controls should be added only after the core communica
 - The production `/api/users/directory` endpoint returns only active colleagues from the signed-in user's company, excludes the requester, and does not expose admin-only contact/status controls
 - Production verification as Mrudul's real `user` role returned HTTP 200 with both active Manoj colleagues; the admin visual regression also passed without browser errors
 - Expo web production is deployed on Vercel at `https://bizchat-wine.vercel.app` and visually verified with the production API configuration
-- This workspace is initialized as a Git repository on branch `main`; a GitHub remote still needs to be supplied before the first push
+- Vercel web requests use the same-origin `/api` path, which Vercel securely proxies to the VPS API to avoid client-side DNS and cross-origin connectivity problems
+- Express trusts the single production Nginx proxy so login rate limiting reads forwarded visitor addresses correctly
+- GitHub source is available at `https://github.com/Devsoft-MC/bizchat` on branch `main`
 
 ## Local Run
 

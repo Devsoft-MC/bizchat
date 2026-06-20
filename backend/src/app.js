@@ -15,6 +15,9 @@ export function createApp(db = pool) {
   const app = express();
 
   app.disable('x-powered-by');
+  // Production traffic reaches Express through Nginx. Trust only that first
+  // proxy so rate limiting uses the visitor IP from X-Forwarded-For.
+  app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : false);
   app.use(helmet());
   app.use(cors({ origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',') }));
   app.use(express.json({ limit: '1mb' }));
