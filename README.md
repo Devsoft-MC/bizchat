@@ -164,6 +164,8 @@ Facility and smart office controls should be added only after the core communica
 - Mobile landing is role-aware: Company Admins open User Administration while regular users open a read-only People Directory
 - The production `/api/users/directory` endpoint returns only active colleagues from the signed-in user's company, excludes the requester, and does not expose admin-only contact/status controls
 - Production verification as Mrudul's real `user` role returned HTTP 200 with both active Manoj colleagues; the admin visual regression also passed without browser errors
+- Expo web production is deployed on Vercel at `https://bizchat-wine.vercel.app` and visually verified with the production API configuration
+- This workspace is initialized as a Git repository on branch `main`; a GitHub remote still needs to be supplied before the first push
 
 ## Local Run
 

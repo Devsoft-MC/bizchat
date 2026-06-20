@@ -25,3 +25,9 @@ Production API:
 ```text
 https://api.sahiproducts.com/bizchat/api
 ```
+
+Production web app:
+
+```text
+https://bizchat-wine.vercel.app
+```
