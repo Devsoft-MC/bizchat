@@ -1,0 +1,15 @@
+.env
+.vercel/
+backend/.env
+node_modules/
+dist/
+build/
+coverage/
+.DS_Store
+backend/node_modules/
+backend/.env
+backend/coverage/
+*.log
+mobile/node_modules/
+mobile/.expo/
+mobile/.env
