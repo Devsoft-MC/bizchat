@@ -117,6 +117,29 @@ test('conversation recipients can upload a private attachment', async () => {
   }
 });
 
+test('mark-read updates only the signed-in recipient conversation state', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const conversationId = '27a87832-8c4f-4971-843a-a92de1149263';
+  const token = jwt.sign({ sub: userId, companyId, role: 'user' }, env.JWT_SECRET);
+  let updateValues;
+  let queryNumber = 0;
+  const db = fakeDb(async (_sql, values) => {
+    queryNumber += 1;
+    if (queryNumber === 1) return { rows: [{ id: conversationId }] };
+    updateValues = values;
+    return { rows: [{ id: 'status-1' }, { id: 'status-2' }] };
+  });
+
+  const response = await request(createApp(db))
+    .post(`/api/conversations/${conversationId}/read`)
+    .set('Authorization', `Bearer ${token}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.readCount, 2);
+  assert.deepEqual(updateValues, [conversationId, companyId, userId]);
+});
+
 test('unknown API routes return a structured 404', async () => {
   const response = await request(createApp(fakeDb())).get('/api/missing');
   assert.equal(response.status, 404);

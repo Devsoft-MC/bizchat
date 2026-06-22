@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import type { ChatMessage, Company, Department, DirectConversation, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './types';
+import type { ChatMessage, Company, ConversationSummary, Department, DirectConversation, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './types';
 
 const defaultApiUrl = Platform.OS === 'web'
   ? '/api'
@@ -92,9 +92,18 @@ export async function getOrCreateDirectConversation(token: string, participantId
   return result.conversation;
 }
 
+export async function getConversations(token: string) {
+  const result = await apiRequest<{ conversations: ConversationSummary[] }>('/conversations', {}, token);
+  return result.conversations;
+}
+
 export async function getConversationMessages(token: string, conversationId: string) {
   const result = await apiRequest<{ messages: ChatMessage[] }>(`/conversations/${conversationId}/messages`, {}, token);
   return result.messages;
+}
+
+export async function markConversationRead(token: string, conversationId: string) {
+  return apiRequest<{ readCount: number }>(`/conversations/${conversationId}/read`, { method: 'POST' }, token);
 }
 
 export async function sendConversationMessage(token: string, conversationId: string, content: string) {

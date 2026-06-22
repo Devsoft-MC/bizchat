@@ -82,6 +82,22 @@ export type ChatAttachment = {
   file_size: number;
 };
 
+export type ConversationSummary = {
+  id: string;
+  last_message_at: string | null;
+  created_at: string;
+  participant_id: string;
+  participant_first_name: string;
+  participant_last_name: string | null;
+  participant_job_title: string | null;
+  participant_profile_photo_url: string | null;
+  last_message_id: string | null;
+  last_message_sender_id: string | null;
+  last_message_type: ChatMessage['message_type'] | null;
+  last_message_content: string | null;
+  unread_count: number;
+};
+
 export type Company = {
   id: string;
   name: string;

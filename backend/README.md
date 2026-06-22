@@ -48,7 +48,9 @@ the `companies` table is empty. After setup, authenticate with
 - `PATCH /api/users/:id/password` - set a new password for a company user
 - `PATCH /api/users/:id/status` - activate, suspend, or deactivate a user
 - `POST /api/conversations/direct` - create or reuse a direct conversation with an active colleague
+- `GET /api/conversations` - recipient-scoped conversation inbox with latest-message preview and unread count
 - `GET /api/conversations/:id/messages` - list messages for an authenticated conversation member
+- `POST /api/conversations/:id/read` - mark the signed-in recipient's unread messages as read
 - `POST /api/conversations/:id/messages` - send a text message as an authenticated conversation member
 - `POST /api/conversations/:id/attachments` - upload one private image/document up to 10 MB
 - `GET /api/conversations/:id/attachments/:attachmentId` - authenticated recipient download

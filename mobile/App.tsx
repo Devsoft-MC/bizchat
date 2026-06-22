@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import {
   BriefcaseBusiness,
+  Bell,
   Check,
   ChevronLeft,
   Download,
@@ -35,9 +36,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { ApiError, changeUserPassword, createUser, downloadConversationAttachment, getConversationMessages, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getOrCreateDirectConversation, getUsers, login, sendConversationMessage, updateUser, updateUserStatus, uploadConversationAttachment } from './src/api';
+import { ApiError, changeUserPassword, createUser, downloadConversationAttachment, getConversationMessages, getConversations, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getOrCreateDirectConversation, getUsers, login, markConversationRead, sendConversationMessage, updateUser, updateUserStatus, uploadConversationAttachment } from './src/api';
 import { sessionStorage } from './src/session-storage';
-import type { ChatMessage, Company, Department, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './src/types';
+import type { ChatMessage, Company, ConversationSummary, Department, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './src/types';
 
 const SESSION_KEY = 'bizchat_admin_token';
 const DEVELOPMENT_COMPANY_SLUG = 'icon';
@@ -251,11 +252,39 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (token: string) => 
 
 function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onBack?: () => void; onLogout: () => Promise<void> }) {
   const [selectedPerson, setSelectedPerson] = useState<DirectoryUser | null>(null);
+  const [showInbox, setShowInbox] = useState(false);
   const [company, setCompany] = useState<Company | null>(null);
   const [people, setPeople] = useState<DirectoryUser[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const notificationSnapshot = useRef<Map<string, string | null>>(new Map());
+  const notificationInitialized = useRef(false);
+
+  const unreadTotal = conversations.reduce((total, item) => total + Number(item.unread_count || 0), 0);
+
+  async function loadNotifications() {
+    try {
+      const items = await getConversations(token);
+      if (notificationInitialized.current && Platform.OS === 'web' && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        items.forEach((item) => {
+          const knownConversation = notificationSnapshot.current.has(item.id);
+          const previousMessageId = notificationSnapshot.current.get(item.id);
+          if (item.unread_count > 0 && item.last_message_id && knownConversation && previousMessageId !== item.last_message_id && selectedPerson?.id !== item.participant_id) {
+            const senderName = [item.participant_first_name, item.participant_last_name].filter(Boolean).join(' ');
+            const body = item.last_message_type === 'text' ? item.last_message_content || 'New message' : 'Sent an attachment';
+            new Notification(senderName, { body, tag: `bizchat-${item.id}` });
+          }
+        });
+      }
+      items.forEach((item) => notificationSnapshot.current.set(item.id, item.last_message_id));
+      notificationInitialized.current = true;
+      setConversations(items);
+    } catch (notificationError) {
+      if (notificationError instanceof ApiError && notificationError.status === 401) await onLogout();
+    }
+  }
 
   async function loadPeople(showRefresh = false) {
     if (showRefresh) setRefreshing(true);
@@ -281,8 +310,21 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
     loadPeople();
   }, [token]);
 
+  useEffect(() => {
+    loadNotifications();
+    const interval = setInterval(loadNotifications, 5000);
+    return () => clearInterval(interval);
+  }, [token, selectedPerson?.id]);
+
   if (selectedPerson) {
-    return <DirectChatScreen token={token} person={selectedPerson} onBack={() => setSelectedPerson(null)} onLogout={onLogout} />;
+    return <DirectChatScreen token={token} person={selectedPerson} onBack={() => { setSelectedPerson(null); loadNotifications(); }} onLogout={onLogout} />;
+  }
+
+  if (showInbox) {
+    return <ConversationInboxScreen conversations={conversations} onSelect={(person) => { setShowInbox(false); setSelectedPerson(person); }} onBack={() => setShowInbox(false)} onEnableNotifications={async () => {
+      if (Platform.OS !== 'web' || typeof Notification === 'undefined') return;
+      await Notification.requestPermission();
+    }} onLogout={onLogout} />;
   }
 
   return (
@@ -298,6 +340,10 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
           </View>
         </View>
         <View style={styles.headerActions}>
+          <View style={styles.notificationButtonWrap}>
+            <IconButton label="Open notifications" onPress={() => setShowInbox(true)} icon={<Bell size={20} color="#ffffff" />} dark />
+            {unreadTotal > 0 ? <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadTotal > 99 ? '99+' : unreadTotal}</Text></View> : null}
+          </View>
           {onBack ? <IconButton label="Back to user administration" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark /> : null}
           <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
         </View>
@@ -370,6 +416,59 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
   );
 }
 
+function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNotifications, onLogout }: { conversations: ConversationSummary[]; onSelect: (person: DirectoryUser) => void; onBack: () => void; onEnableNotifications: () => Promise<void>; onLogout: () => Promise<void> }) {
+  const [permission, setPermission] = useState(
+    Platform.OS === 'web' && typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
+  );
+
+  async function enableNotifications() {
+    await onEnableNotifications();
+    if (Platform.OS === 'web' && typeof Notification !== 'undefined') setPermission(Notification.permission);
+  }
+
+  return (
+    <View style={styles.flex}>
+      <View style={styles.appHeader}>
+        <View style={styles.headerIdentity}>
+          <IconButton label="Back to people" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark />
+          <View><Text style={styles.headerCompany}>Notifications</Text><Text style={styles.headerSection}>Direct messages</Text></View>
+        </View>
+        <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
+      </View>
+      <ScrollView contentContainerStyle={styles.listPage}>
+        <View style={styles.listInner}>
+          <View style={styles.listTitleRow}>
+            <View style={styles.flex}><Text style={styles.screenTitle}>Messages</Text><Text style={styles.screenSubtitle}>Unread messages and recent conversations.</Text></View>
+            {permission === 'default' ? <Pressable accessibilityRole="button" onPress={enableNotifications} style={({ pressed }) => [styles.compactSecondaryButton, pressed && styles.pressed]}><Bell size={16} color="#13795b" /><Text style={styles.compactSecondaryText}>Enable alerts</Text></Pressable> : null}
+          </View>
+          {permission === 'denied' ? <FeedbackMessage type="error" message="Browser notifications are blocked. Enable them in your browser site settings." /> : null}
+          {conversations.length === 0 ? (
+            <View style={styles.emptyState}><Bell size={30} color="#7b8791" /><Text style={styles.emptyTitle}>No conversations yet</Text><Text style={styles.emptyText}>Your recent chats and unread messages will appear here.</Text></View>
+          ) : (
+            <View style={styles.userList}>
+              {conversations.map((item) => {
+                const fullName = [item.participant_first_name, item.participant_last_name].filter(Boolean).join(' ');
+                const preview = item.last_message_type === 'text' ? item.last_message_content || 'New message' : item.last_message_type ? 'Attachment' : 'Conversation started';
+                const person: DirectoryUser = { id: item.participant_id, first_name: item.participant_first_name, last_name: item.participant_last_name, job_title: item.participant_job_title, profile_photo_url: item.participant_profile_photo_url, department_names: [] };
+                return (
+                  <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`Open conversation with ${fullName}`} onPress={() => onSelect(person)} style={({ pressed }) => [styles.inboxCard, item.unread_count > 0 && styles.inboxCardUnread, pressed && styles.pressed]}>
+                    <View style={styles.userAvatar}><Text style={styles.userAvatarText}>{companyInitials(fullName)}</Text></View>
+                    <View style={styles.userIdentity}><Text style={styles.userName}>{fullName}</Text><Text numberOfLines={1} style={styles.inboxPreview}>{preview}</Text></View>
+                    <View style={styles.inboxMeta}>
+                      {item.last_message_at ? <Text style={styles.inboxTime}>{new Date(item.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text> : null}
+                      {item.unread_count > 0 ? <View style={styles.inboxUnreadBadge}><Text style={styles.inboxUnreadText}>{item.unread_count}</Text></View> : null}
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
 function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; person: DirectoryUser; onBack: () => void; onLogout: () => Promise<void> }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -393,6 +492,7 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
     try {
       const result = await getConversationMessages(token, id);
       setMessages(result);
+      await markConversationRead(token, id);
     } catch (loadError) {
       await handleApiError(loadError, 'Messages could not be loaded.');
     } finally {
@@ -1301,6 +1401,9 @@ const styles = StyleSheet.create({
   appHeader: { minHeight: 70, backgroundColor: '#202830', paddingHorizontal: 18, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerIdentity: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 11 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  notificationButtonWrap: { position: 'relative' },
+  notificationBadge: { position: 'absolute', top: -5, right: -5, minWidth: 19, height: 19, borderRadius: 10, backgroundColor: '#d13c32', borderWidth: 2, borderColor: '#202830', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
+  notificationBadgeText: { color: '#ffffff', fontSize: 9, fontWeight: '800' },
   smallBrandMark: { width: 38, height: 38, borderRadius: 7, backgroundColor: '#f3b33d', alignItems: 'center', justifyContent: 'center' },
   smallBrandMarkText: { color: '#202830', fontSize: 14, fontWeight: '800', letterSpacing: 0 },
   headerCompany: { color: '#ffffff', fontSize: 14, fontWeight: '700', letterSpacing: 0 },
@@ -1321,6 +1424,13 @@ const styles = StyleSheet.create({
   emptyText: { color: '#69737d', fontSize: 13, textAlign: 'center', marginTop: 5 },
   userList: { gap: 12 },
   userCard: { borderWidth: 1, borderColor: '#d8dee3', borderRadius: 8, backgroundColor: '#ffffff', padding: 15 },
+  inboxCard: { minHeight: 68, borderWidth: 1, borderColor: '#d8dee3', borderRadius: 8, backgroundColor: '#ffffff', paddingHorizontal: 13, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', gap: 11 },
+  inboxCardUnread: { borderColor: '#9bcbb7', backgroundColor: '#f0f9f5' },
+  inboxPreview: { color: '#69737d', fontSize: 12, marginTop: 4 },
+  inboxMeta: { alignItems: 'flex-end', gap: 7 },
+  inboxTime: { color: '#89939d', fontSize: 9 },
+  inboxUnreadBadge: { minWidth: 21, height: 21, borderRadius: 11, backgroundColor: '#13795b', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
+  inboxUnreadText: { color: '#ffffff', fontSize: 10, fontWeight: '800' },
   userCardTop: { flexDirection: 'row', alignItems: 'center', gap: 11 },
   userAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#e2f1eb', alignItems: 'center', justifyContent: 'center' },
   userAvatarText: { color: '#13795b', fontSize: 13, fontWeight: '800' },

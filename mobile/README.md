@@ -11,6 +11,8 @@ Company Admins and regular users can open People, select a colleague, and exchan
 
 On web, users can attach images, PDF, text, Word, and Excel files with the paperclip button or paste a clipboard image/file directly into an open chat. Attachments are limited to 10 MB and remain recipient-only. Native iOS/Android document selection is a following milestone.
 
+The web app includes a notification bell with unread counts and a recent-conversation inbox. Users can opt into browser notifications; while BizChat is open, new messages are detected every five seconds. Native background push remains a Firebase Cloud Messaging milestone.
+
 ## Run
 
 Keep the backend running on port `5001`, then:

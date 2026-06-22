@@ -170,6 +170,7 @@ Facility and smart office controls should be added only after the core communica
 - Direct conversations and messages enforce authenticated company membership on the backend; the production route is deployed under PM2
 - Direct-chat privacy is recipient-only: only the two active conversation members can read or send messages, and Company Admin/Super Admin roles receive no chat-viewing bypass
 - BizChat web Direct Chat supports private image/document attachments through the paperclip button and direct clipboard image/file paste; files are limited to 10 MB and downloads require conversation membership
+- Web message notifications are implemented: recipient-specific unread counts, a notification inbox, read-state updates when chats open, and optional browser alerts while BizChat is running
 - The production `/api/users/directory` endpoint returns only active colleagues from the signed-in user's company, excludes the requester, and does not expose admin-only contact/status controls
 - Production verification as Mrudul's real `user` role returned HTTP 200 with both active Manoj colleagues; the admin visual regression also passed without browser errors
 - Expo web production is deployed on Vercel at `https://bizchat-wine.vercel.app` and visually verified with the production API configuration
@@ -199,8 +200,8 @@ npm start
 Web preview URL: `http://localhost:8081`
 
 ## Tomorrow Start Point
-- Add a conversation inbox with latest-message previews
-- Add Socket.IO realtime delivery to replace refresh polling
+- Add Socket.IO realtime delivery so inbox and browser alerts no longer depend on five-second polling
+- Add Firebase Cloud Messaging for background Android/iOS push notifications
 - Add native mobile document selection for iOS and Android
 - Add backend integration tests using a disposable PostgreSQL test database
 - Continue with department update APIs after the mobile flow is verified

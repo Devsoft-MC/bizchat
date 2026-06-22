@@ -84,6 +84,43 @@ export function createConversationsRouter(db) {
   const router = Router();
   router.use(authenticate);
 
+  router.get('/', asyncHandler(async (request, response) => {
+    const result = await db.query(
+      `SELECT c.id, c.last_message_at, c.created_at,
+              other_user.id AS participant_id,
+              other_user.first_name AS participant_first_name,
+              other_user.last_name AS participant_last_name,
+              other_user.job_title AS participant_job_title,
+              other_user.profile_photo_url AS participant_profile_photo_url,
+              last_message.id AS last_message_id,
+              last_message.sender_id AS last_message_sender_id,
+              last_message.message_type AS last_message_type,
+              last_message.content AS last_message_content,
+              (SELECT count(*)::int
+               FROM messages unread_message
+               JOIN message_statuses unread_status
+                 ON unread_status.message_id = unread_message.id
+                AND unread_status.user_id = $2
+               WHERE unread_message.conversation_id = c.id
+                 AND unread_message.sender_id <> $2
+                 AND unread_message.deleted_at IS NULL
+                 AND unread_status.status <> 'read') AS unread_count
+       FROM conversations c
+       JOIN conversation_members requester
+         ON requester.conversation_id = c.id AND requester.user_id = $2 AND requester.left_at IS NULL
+       JOIN conversation_members other_member
+         ON other_member.conversation_id = c.id AND other_member.user_id <> $2 AND other_member.left_at IS NULL
+       JOIN users other_user ON other_user.id = other_member.user_id AND other_user.company_id = $1
+       LEFT JOIN messages last_message ON last_message.id = c.last_message_id AND last_message.deleted_at IS NULL
+       WHERE c.company_id = $1 AND c.conversation_type = 'direct' AND c.is_archived = false
+         AND (SELECT count(*) FROM conversation_members recipient_scope
+              WHERE recipient_scope.conversation_id = c.id AND recipient_scope.left_at IS NULL) = 2
+       ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC`,
+      [request.auth.companyId, request.auth.sub]
+    );
+    response.json({ conversations: result.rows });
+  }));
+
   router.post('/direct', validate(directSchema), asyncHandler(async (request, response) => {
     if (request.body.participantId === request.auth.sub) {
       throw new AppError(400, 'self_conversation', 'You cannot start a direct chat with yourself');
@@ -155,6 +192,24 @@ export function createConversationsRouter(db) {
       [request.params.id, request.auth.companyId]
     );
     response.json({ messages: result.rows });
+  }));
+
+  router.post('/:id/read', validate(idParamsSchema, 'params'), asyncHandler(async (request, response) => {
+    await requireMembership(db, request.params.id, request.auth);
+    const result = await db.query(
+      `UPDATE message_statuses status
+       SET status = 'read', updated_at = now()
+       FROM messages message
+       WHERE status.message_id = message.id
+         AND message.conversation_id = $1
+         AND message.company_id = $2
+         AND status.user_id = $3
+         AND message.sender_id <> $3
+         AND status.status <> 'read'
+       RETURNING status.id`,
+      [request.params.id, request.auth.companyId, request.auth.sub]
+    );
+    response.json({ readCount: result.rows.length });
   }));
 
   router.post('/:id/attachments', validate(idParamsSchema, 'params'), asyncHandler(async (request, response) => {
