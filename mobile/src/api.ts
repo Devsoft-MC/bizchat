@@ -105,6 +105,35 @@ export async function sendConversationMessage(token: string, conversationId: str
   return result.message;
 }
 
+export async function uploadConversationAttachment(token: string, conversationId: string, file: Blob, fileName: string) {
+  const form = new FormData();
+  form.append('file', file, fileName);
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}/conversations/${conversationId}/attachments`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+  } catch {
+    throw new ApiError('Cannot reach the BizChat server. Check your connection.', 0, 'network_error');
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(data?.error?.message || 'The file could not be uploaded.', response.status, data?.error?.code);
+  return data.message as ChatMessage;
+}
+
+export async function downloadConversationAttachment(token: string, conversationId: string, attachmentId: string) {
+  const response = await fetch(`${API_URL}/conversations/${conversationId}/attachments/${attachmentId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new ApiError(data?.error?.message || 'The attachment could not be downloaded.', response.status, data?.error?.code);
+  }
+  return response.blob();
+}
+
 export async function updateUserStatus(token: string, userId: string, status: User['status']) {
   const result = await apiRequest<{ user: User }>(`/users/${userId}/status`, {
     method: 'PATCH',

@@ -3,12 +3,15 @@ import {
   BriefcaseBusiness,
   Check,
   ChevronLeft,
+  Download,
   Eye,
   EyeOff,
+  FileText,
   KeyRound,
   LogOut,
   Mail,
   MessageCircle,
+  Paperclip,
   Pencil,
   Phone,
   RefreshCw,
@@ -32,7 +35,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { ApiError, changeUserPassword, createUser, getConversationMessages, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getOrCreateDirectConversation, getUsers, login, sendConversationMessage, updateUser, updateUserStatus } from './src/api';
+import { ApiError, changeUserPassword, createUser, downloadConversationAttachment, getConversationMessages, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getOrCreateDirectConversation, getUsers, login, sendConversationMessage, updateUser, updateUserStatus, uploadConversationAttachment } from './src/api';
 import { sessionStorage } from './src/session-storage';
 import type { ChatMessage, Company, Department, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './src/types';
 
@@ -42,6 +45,12 @@ const DEVELOPMENT_COMPANY_SLUG = 'icon';
 function companyInitials(name?: string) {
   if (!name) return 'BC';
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const emptyForm: UserForm = {
@@ -369,6 +378,7 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const messageListRef = useRef<ScrollView>(null);
   const fullName = [person.first_name, person.last_name].filter(Boolean).join(' ');
@@ -413,6 +423,18 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
     return () => clearInterval(interval);
   }, [conversationId, token]);
 
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !conversationId || typeof document === 'undefined') return undefined;
+    const handlePaste = (event: ClipboardEvent) => {
+      const file = event.clipboardData?.files?.[0];
+      if (!file) return;
+      event.preventDefault();
+      handleUpload(file, file.name || `pasted-${Date.now()}.png`);
+    };
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [conversationId, token]);
+
   async function handleSend() {
     const content = draft.trim();
     if (!content || !conversationId || sending) return;
@@ -426,6 +448,52 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
       await handleApiError(sendError, 'The message could not be sent.');
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handleUpload(file: Blob, fileName: string) {
+    if (!conversationId || uploading) return;
+    if (file.size > 10 * 1024 * 1024) return setError('Files must be 10 MB or smaller.');
+    setUploading(true);
+    setError('');
+    try {
+      const message = await uploadConversationAttachment(token, conversationId, file, fileName);
+      setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message]);
+    } catch (uploadError) {
+      await handleApiError(uploadError, 'The attachment could not be uploaded.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function handlePickAttachment() {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') {
+      setError('File selection is currently available in BizChat web.');
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) handleUpload(file, file.name);
+    };
+    input.click();
+  }
+
+  async function handleDownload(attachmentId: string, fileName: string) {
+    if (!conversationId || Platform.OS !== 'web' || typeof document === 'undefined') return;
+    setError('');
+    try {
+      const blob = await downloadConversationAttachment(token, conversationId, attachmentId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (downloadError) {
+      await handleApiError(downloadError, 'The attachment could not be downloaded.');
     }
   }
 
@@ -459,7 +527,14 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
               return (
                 <View key={message.id} style={[styles.messageRow, mine ? styles.messageRowMine : styles.messageRowTheirs]}>
                   <View style={[styles.messageBubble, mine ? styles.messageBubbleMine : styles.messageBubbleTheirs]}>
-                    <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.content}</Text>
+                    {message.content ? <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.content}</Text> : null}
+                    {message.attachments?.map((attachment) => (
+                      <Pressable key={attachment.id} accessibilityRole="button" accessibilityLabel={`Download ${attachment.file_name}`} onPress={() => handleDownload(attachment.id, attachment.file_name)} style={[styles.attachmentCard, mine && styles.attachmentCardMine]}>
+                        {attachment.mime_type?.startsWith('image/') ? <Paperclip size={17} color={mine ? '#ffffff' : '#13795b'} /> : <FileText size={17} color={mine ? '#ffffff' : '#13795b'} />}
+                        <View style={styles.attachmentIdentity}><Text numberOfLines={1} style={[styles.attachmentName, mine && styles.attachmentNameMine]}>{attachment.file_name}</Text><Text style={[styles.attachmentSize, mine && styles.attachmentSizeMine]}>{formatFileSize(Number(attachment.file_size))}</Text></View>
+                        <Download size={16} color={mine ? '#ffffff' : '#52616c'} />
+                      </Pressable>
+                    ))}
                     <Text style={[styles.messageTime, mine && styles.messageTimeMine]}>{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                   </View>
                 </View>
@@ -472,6 +547,9 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
           </Pressable>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <View style={styles.composer}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Attach file" disabled={uploading || !conversationId} onPress={handlePickAttachment} style={({ pressed }) => [styles.attachButton, uploading && styles.disabled, pressed && styles.pressed]}>
+                {uploading ? <ActivityIndicator size="small" color="#13795b" /> : <Paperclip size={20} color="#13795b" />}
+              </Pressable>
               <TextInput accessibilityLabel="Message" value={draft} onChangeText={setDraft} placeholder="Write a message" placeholderTextColor="#89939d" multiline maxLength={4000} style={styles.composerInput} />
               <Pressable accessibilityRole="button" accessibilityLabel="Send message" disabled={!draft.trim() || sending || !conversationId} onPress={handleSend} style={({ pressed }) => [styles.sendButton, (!draft.trim() || sending || !conversationId) && styles.disabled, pressed && styles.primaryButtonPressed]}>
                 {sending ? <ActivityIndicator size="small" color="#ffffff" /> : <Send size={19} color="#ffffff" />}
@@ -1285,9 +1363,17 @@ const styles = StyleSheet.create({
   messageTextMine: { color: '#ffffff' },
   messageTime: { color: '#7b8791', fontSize: 9, marginTop: 4, textAlign: 'right' },
   messageTimeMine: { color: '#cce8dd' },
+  attachmentCard: { minWidth: 210, maxWidth: 300, borderWidth: 1, borderColor: '#cfe0d9', borderRadius: 9, backgroundColor: '#f4faf7', paddingHorizontal: 10, paddingVertical: 9, marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  attachmentCardMine: { borderColor: '#62a991', backgroundColor: '#0f6b50' },
+  attachmentIdentity: { flex: 1, minWidth: 0 },
+  attachmentName: { color: '#25323b', fontSize: 12, fontWeight: '700' },
+  attachmentNameMine: { color: '#ffffff' },
+  attachmentSize: { color: '#71808a', fontSize: 9, marginTop: 3 },
+  attachmentSizeMine: { color: '#cce8dd' },
   chatRefresh: { minHeight: 32, paddingHorizontal: 16, backgroundColor: '#eef1f3', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 },
   composer: { minHeight: 66, borderTopWidth: 1, borderTopColor: '#d5dce1', backgroundColor: '#ffffff', paddingHorizontal: 12, paddingVertical: 9, flexDirection: 'row', alignItems: 'flex-end', gap: 9 },
   composerInput: { flex: 1, maxHeight: 110, minHeight: 46, borderWidth: 1, borderColor: '#cbd2d8', borderRadius: 22, color: '#182129', fontSize: 15, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10 },
+  attachButton: { width: 42, height: 46, borderRadius: 21, borderWidth: 1, borderColor: '#b8ddcd', backgroundColor: '#eef8f4', alignItems: 'center', justifyContent: 'center' },
   sendButton: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#13795b', alignItems: 'center', justifyContent: 'center' },
   formPage: { paddingHorizontal: 18, paddingTop: 24, paddingBottom: 44 },
   formInner: { width: '100%', maxWidth: 620, alignSelf: 'center' },

@@ -72,6 +72,14 @@ export type ChatMessage = {
   created_at: string;
   sender_first_name?: string;
   sender_last_name?: string | null;
+  attachments?: ChatAttachment[];
+};
+
+export type ChatAttachment = {
+  id: string;
+  file_name: string;
+  mime_type: string | null;
+  file_size: number;
 };
 
 export type Company = {

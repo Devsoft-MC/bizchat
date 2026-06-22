@@ -9,6 +9,7 @@ coverage/
 backend/node_modules/
 backend/.env
 backend/coverage/
+backend/uploads/
 *.log
 mobile/node_modules/
 mobile/.expo/

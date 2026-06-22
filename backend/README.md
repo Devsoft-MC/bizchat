@@ -50,8 +50,11 @@ the `companies` table is empty. After setup, authenticate with
 - `POST /api/conversations/direct` - create or reuse a direct conversation with an active colleague
 - `GET /api/conversations/:id/messages` - list messages for an authenticated conversation member
 - `POST /api/conversations/:id/messages` - send a text message as an authenticated conversation member
+- `POST /api/conversations/:id/attachments` - upload one private image/document up to 10 MB
+- `GET /api/conversations/:id/attachments/:attachmentId` - authenticated recipient download
 
 Direct chats are private to exactly two active conversation members. Administrative roles do not grant access to conversations unless that administrator is one of those two recipients.
+Attachment files are stored under `backend/uploads/chat` (or `CHAT_UPLOAD_DIR`) and are never served as a public static directory.
 
 ## Create iCON Systems Locally
 

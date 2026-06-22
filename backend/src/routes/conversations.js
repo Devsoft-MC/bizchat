@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import { asyncHandler } from '../lib/async-handler.js';
 import { AppError, notFound } from '../lib/errors.js';
@@ -8,6 +11,55 @@ import { validate } from '../middleware/validate.js';
 const idParamsSchema = z.object({ id: z.string().uuid() });
 const directSchema = z.object({ participantId: z.string().uuid() });
 const messageSchema = z.object({ content: z.string().trim().min(1).max(4000) });
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const uploadDirectory = process.env.CHAT_UPLOAD_DIR || path.resolve(process.cwd(), 'uploads/chat');
+const allowedMimeTypes = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv'
+]);
+
+function safeFileName(value) {
+  return path.basename(value || 'attachment').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180) || 'attachment';
+}
+
+function isAllowedMimeType(mimeType) {
+  return mimeType.startsWith('image/') || allowedMimeTypes.has(mimeType);
+}
+
+async function parseMultipartFile(request) {
+  const contentType = request.headers['content-type'] || '';
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!boundaryMatch) throw new AppError(400, 'invalid_upload', 'A multipart file upload is required');
+  const boundary = boundaryMatch[1] || boundaryMatch[2];
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    totalBytes += chunk.length;
+    if (totalBytes > MAX_FILE_BYTES + 64 * 1024) throw new AppError(413, 'file_too_large', 'Files must be 10 MB or smaller');
+    chunks.push(chunk);
+  }
+  const body = Buffer.concat(chunks);
+  const headerEnd = body.indexOf(Buffer.from('\r\n\r\n'));
+  if (headerEnd < 0) throw new AppError(400, 'invalid_upload', 'The uploaded file could not be read');
+  const headers = body.subarray(0, headerEnd).toString('utf8');
+  const fileNameMatch = headers.match(/filename="([^"]*)"/i);
+  const mimeTypeMatch = headers.match(/content-type:\s*([^\r\n]+)/i);
+  const endMarker = Buffer.from(`\r\n--${boundary}`);
+  const fileStart = headerEnd + 4;
+  const fileEnd = body.indexOf(endMarker, fileStart);
+  if (!fileNameMatch || fileEnd < fileStart) throw new AppError(400, 'invalid_upload', 'Choose one file to upload');
+  const data = body.subarray(fileStart, fileEnd);
+  const mimeType = (mimeTypeMatch?.[1] || 'application/octet-stream').trim().toLowerCase();
+  if (!data.length) throw new AppError(400, 'empty_file', 'The selected file is empty');
+  if (data.length > MAX_FILE_BYTES) throw new AppError(413, 'file_too_large', 'Files must be 10 MB or smaller');
+  if (!isAllowedMimeType(mimeType)) throw new AppError(400, 'unsupported_file_type', 'Upload an image, PDF, text, Word, or Excel file');
+  return { data, fileName: safeFileName(fileNameMatch[1]), mimeType };
+}
 
 async function requireMembership(db, conversationId, auth) {
   const result = await db.query(
@@ -89,15 +141,91 @@ export function createConversationsRouter(db) {
     const result = await db.query(
       `SELECT m.id, m.conversation_id, m.sender_id, m.message_type, m.content,
               m.edited_at, m.created_at,
-              u.first_name AS sender_first_name, u.last_name AS sender_last_name
+              u.first_name AS sender_first_name, u.last_name AS sender_last_name,
+              COALESCE(jsonb_agg(jsonb_build_object(
+                'id', a.id, 'file_name', a.file_name, 'mime_type', a.mime_type, 'file_size', a.file_size
+              )) FILTER (WHERE a.id IS NOT NULL), '[]'::jsonb) AS attachments
        FROM messages m
        JOIN users u ON u.id = m.sender_id
+       LEFT JOIN attachments a ON a.message_id = m.id
        WHERE m.conversation_id = $1 AND m.company_id = $2 AND m.deleted_at IS NULL
+       GROUP BY m.id, u.id
        ORDER BY m.created_at ASC
        LIMIT 200`,
       [request.params.id, request.auth.companyId]
     );
     response.json({ messages: result.rows });
+  }));
+
+  router.post('/:id/attachments', validate(idParamsSchema, 'params'), asyncHandler(async (request, response) => {
+    await requireMembership(db, request.params.id, request.auth);
+    const upload = await parseMultipartFile(request);
+    await mkdir(uploadDirectory, { recursive: true });
+    const extension = path.extname(upload.fileName).slice(0, 12);
+    const storedName = `${randomUUID()}${extension}`;
+    const storedPath = path.join(uploadDirectory, storedName);
+    await writeFile(storedPath, upload.data, { flag: 'wx' });
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const messageResult = await client.query(
+        `INSERT INTO messages (company_id, conversation_id, sender_id, message_type)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, conversation_id, sender_id, message_type, content, edited_at, created_at`,
+        [request.auth.companyId, request.params.id, request.auth.sub, upload.mimeType.startsWith('image/') ? 'image' : 'file']
+      );
+      const message = messageResult.rows[0];
+      const attachmentResult = await client.query(
+        `INSERT INTO attachments
+          (company_id, message_id, file_name, file_path, file_type, mime_type, file_size, checksum, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, file_name, mime_type, file_size`,
+        [request.auth.companyId, message.id, upload.fileName, storedName,
+          upload.mimeType.startsWith('image/') ? 'image' : 'file', upload.mimeType,
+          upload.data.length, createHash('sha256').update(upload.data).digest('hex'), request.auth.sub]
+      );
+      await client.query(
+        `UPDATE conversations SET last_message_id = $1, last_message_at = $2, updated_at = now()
+         WHERE id = $3 AND company_id = $4`,
+        [message.id, message.created_at, request.params.id, request.auth.companyId]
+      );
+      await client.query(
+        `INSERT INTO message_statuses (message_id, user_id, status)
+         SELECT $1, cm.user_id, CASE WHEN cm.user_id = $2 THEN 'sent' ELSE 'delivered' END
+         FROM conversation_members cm
+         WHERE cm.conversation_id = $3 AND cm.left_at IS NULL`,
+        [message.id, request.auth.sub, request.params.id]
+      );
+      await client.query('COMMIT');
+      response.status(201).json({ message: { ...message, attachments: attachmentResult.rows } });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      await unlink(storedPath).catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }));
+
+  router.get('/:id/attachments/:attachmentId', validate(z.object({ id: z.string().uuid(), attachmentId: z.string().uuid() }), 'params'), asyncHandler(async (request, response) => {
+    await requireMembership(db, request.params.id, request.auth);
+    const result = await db.query(
+      `SELECT a.id, a.file_name, a.file_path, a.mime_type
+       FROM attachments a
+       JOIN messages m ON m.id = a.message_id
+       WHERE a.id = $1 AND m.conversation_id = $2 AND a.company_id = $3 AND m.deleted_at IS NULL`,
+      [request.params.attachmentId, request.params.id, request.auth.companyId]
+    );
+    const attachment = result.rows[0];
+    if (!attachment) throw notFound('Attachment not found');
+    const filePath = path.join(uploadDirectory, path.basename(attachment.file_path));
+    const file = await readFile(filePath).catch(() => null);
+    if (!file) throw notFound('Attachment file not found');
+    await db.query('UPDATE attachments SET download_count = download_count + 1 WHERE id = $1', [attachment.id]);
+    response.setHeader('Content-Type', attachment.mime_type || 'application/octet-stream');
+    response.setHeader('Content-Disposition', `attachment; filename="${safeFileName(attachment.file_name)}"`);
+    response.send(file);
   }));
 
   router.post('/:id/messages', validate(idParamsSchema, 'params'), validate(messageSchema), asyncHandler(async (request, response) => {
