@@ -1,9 +1,11 @@
 import { Platform } from 'react-native';
 import type { ChatMessage, Company, Department, DirectConversation, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './types';
 
-const defaultApiUrl = Platform.OS === 'android'
-  ? 'http://10.0.2.2:5001/api'
-  : 'http://localhost:5001/api';
+const defaultApiUrl = Platform.OS === 'web'
+  ? '/api'
+  : Platform.OS === 'android'
+    ? 'http://10.0.2.2:5001/api'
+    : 'http://localhost:5001/api';
 
 const API_URL = (process.env.EXPO_PUBLIC_API_URL || defaultApiUrl).replace(/\/$/, '');
 
