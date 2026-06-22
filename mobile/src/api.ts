@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import type { Company, Department, DirectoryUser, LoginInput, User, UserForm } from './types';
+import type { ChatMessage, Company, Department, DirectConversation, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './types';
 
 const defaultApiUrl = Platform.OS === 'android'
   ? 'http://10.0.2.2:5001/api'
@@ -12,6 +12,7 @@ export class ApiError extends Error {
     message: string,
     public status: number,
     public code?: string,
+    public details?: Array<{ field: string; message: string }>,
   ) {
     super(message);
   }
@@ -35,10 +36,15 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, token?: st
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    const details = Array.isArray(data?.error?.details) ? data.error.details : undefined;
+    const detailMessage = details?.length
+      ? ` ${details.map((detail: { field?: string; message?: string }) => `${detail.field || 'request'}: ${detail.message || 'Invalid value'}`).join('; ')}`
+      : '';
     throw new ApiError(
-      data?.error?.message || 'The request could not be completed.',
+      `${data?.error?.message || 'The request could not be completed.'}${detailMessage}`,
       response.status,
       data?.error?.code,
+      details,
     );
   }
   return data as T;
@@ -76,10 +82,59 @@ export async function getDirectoryUsers(token: string) {
   return result.users;
 }
 
+export async function getOrCreateDirectConversation(token: string, participantId: string) {
+  const result = await apiRequest<{ conversation: DirectConversation }>('/conversations/direct', {
+    method: 'POST',
+    body: JSON.stringify({ participantId }),
+  }, token);
+  return result.conversation;
+}
+
+export async function getConversationMessages(token: string, conversationId: string) {
+  const result = await apiRequest<{ messages: ChatMessage[] }>(`/conversations/${conversationId}/messages`, {}, token);
+  return result.messages;
+}
+
+export async function sendConversationMessage(token: string, conversationId: string, content: string) {
+  const result = await apiRequest<{ message: ChatMessage }>(`/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  }, token);
+  return result.message;
+}
+
 export async function updateUserStatus(token: string, userId: string, status: User['status']) {
   const result = await apiRequest<{ user: User }>(`/users/${userId}/status`, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
+  }, token);
+  return result.user;
+}
+
+export async function updateUser(token: string, userId: string, form: UserEditForm, originalRole: User['role']) {
+  const payload = {
+    firstName: form.firstName.trim(),
+    lastName: form.lastName.trim(),
+    employeeCode: form.employeeCode.trim(),
+    jobTitle: form.jobTitle.trim(),
+    mobileNumber: form.mobileNumber.trim(),
+    countryCode: form.countryCode.trim().toUpperCase(),
+    timezone: form.timezone.trim(),
+    email: form.email.trim().toLowerCase(),
+    ...(originalRole !== 'super_admin' && { role: form.role }),
+    departmentIds: form.departmentIds,
+  };
+  const result = await apiRequest<{ user: User }>(`/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  }, token);
+  return result.user;
+}
+
+export async function changeUserPassword(token: string, userId: string, newPassword: string) {
+  const result = await apiRequest<{ user: Pick<User, 'id' | 'first_name' | 'last_name'> }>(`/users/${userId}/password`, {
+    method: 'PATCH',
+    body: JSON.stringify({ newPassword }),
   }, token);
   return result.user;
 }

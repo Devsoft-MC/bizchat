@@ -3,7 +3,11 @@
 Expo React Native app for BizChat companies.
 The authenticated company supplies the in-app company name and initials, so the same build supports multiple companies.
 
-Users sign in with a company slug, an international-format mobile number, and a password. User administration stores each employee's work-location country code and timezone; the company timezone is the default.
+During development, the sign-in screen automatically uses the iCON Systems slug `icon`; users enter only their international-format mobile number and password. User administration stores each employee's work-location country code and timezone; the company timezone is the default.
+
+Company Admins can list users, create accounts, activate or suspend users, edit user details and department assignments, and set a new password. Regular users see the company People Directory.
+
+Company Admins and regular users can open People, select a colleague, and exchange stored one-to-one text messages. The first MVP refreshes messages every five seconds; Socket.IO realtime delivery is the next chat milestone.
 
 ## Run
 

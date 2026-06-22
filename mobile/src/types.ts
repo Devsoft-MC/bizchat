@@ -20,6 +20,8 @@ export type UserForm = {
   departmentIds: string[];
 };
 
+export type UserEditForm = Omit<UserForm, 'password'>;
+
 export type Department = {
   id: string;
   name: string;
@@ -41,6 +43,7 @@ export type User = {
   role: 'super_admin' | Role;
   status: 'active' | 'inactive' | 'suspended';
   department_names: string[];
+  department_ids: string[];
 };
 
 export type DirectoryUser = {
@@ -50,6 +53,25 @@ export type DirectoryUser = {
   job_title: string | null;
   profile_photo_url: string | null;
   department_names: string[];
+};
+
+export type DirectConversation = {
+  id: string;
+  created_at: string;
+  last_message_at: string | null;
+  participant: DirectoryUser;
+};
+
+export type ChatMessage = {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  message_type: 'text' | 'image' | 'file';
+  content: string | null;
+  edited_at: string | null;
+  created_at: string;
+  sender_first_name?: string;
+  sender_last_name?: string | null;
 };
 
 export type Company = {

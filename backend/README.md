@@ -44,7 +44,12 @@ the `companies` table is empty. After setup, authenticate with
 - `DELETE /api/departments/:id` - deactivate a department
 - `GET|POST /api/users` - list or create company users
 - `GET /api/users/directory` - active colleagues in the authenticated user's company
+- `PATCH /api/users/:id` - update a company user's details, role, and departments
+- `PATCH /api/users/:id/password` - set a new password for a company user
 - `PATCH /api/users/:id/status` - activate, suspend, or deactivate a user
+- `POST /api/conversations/direct` - create or reuse a direct conversation with an active colleague
+- `GET /api/conversations/:id/messages` - list messages for an authenticated conversation member
+- `POST /api/conversations/:id/messages` - send a text message as an authenticated conversation member
 
 ## Create iCON Systems Locally
 

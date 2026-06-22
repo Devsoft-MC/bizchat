@@ -21,6 +21,35 @@ const createSchema = z.object({
   departmentIds: z.array(z.string().uuid()).max(20).default([])
 });
 
+const updateSchema = createSchema.omit({ password: true }).partial().extend({
+  countryCode: z.union([z.literal(''), z.string().trim().length(2).toUpperCase()]).optional(),
+  timezone: z.union([z.literal(''), z.string().trim().min(1).max(100)]).optional(),
+  email: z.union([z.literal(''), z.string().email().max(255)]).optional(),
+  departmentIds: z.array(z.string().uuid()).max(20).optional()
+});
+
+const passwordSchema = z.object({
+  newPassword: z.string().min(8).max(128)
+});
+
+async function replaceUserDepartments(client, companyId, userId, departmentIds) {
+  for (const departmentId of departmentIds) {
+    const department = await client.query(
+      'SELECT id FROM departments WHERE id = $1 AND company_id = $2 AND status = $3',
+      [departmentId, companyId, 'active']
+    );
+    if (!department.rows[0]) throw new AppError(400, 'invalid_department', 'A selected department is invalid');
+  }
+
+  await client.query('DELETE FROM user_departments WHERE user_id = $1', [userId]);
+  for (const departmentId of departmentIds) {
+    await client.query(
+      'INSERT INTO user_departments (user_id, department_id) VALUES ($1, $2)',
+      [userId, departmentId]
+    );
+  }
+}
+
 export function createUsersRouter(db) {
   const router = Router();
   router.use(authenticate);
@@ -47,7 +76,9 @@ export function createUsersRouter(db) {
               u.mobile_number, u.country_code, u.timezone, u.email, u.role,
               u.profile_photo_url, u.status, u.last_login_at, u.created_at,
               COALESCE(array_agg(d.name ORDER BY d.name)
-                FILTER (WHERE d.id IS NOT NULL), '{}') AS department_names
+                FILTER (WHERE d.id IS NOT NULL), '{}') AS department_names,
+              COALESCE(array_agg(d.id ORDER BY d.name)
+                FILTER (WHERE d.id IS NOT NULL), '{}') AS department_ids
        FROM users u
        LEFT JOIN user_departments ud ON ud.user_id = u.id
        LEFT JOIN departments d ON d.id = ud.department_id
@@ -99,6 +130,71 @@ export function createUsersRouter(db) {
     } finally {
       client.release();
     }
+  }));
+
+  router.patch('/:id', authorize('super_admin', 'company_admin'), validate(z.object({ id: z.string().uuid() }), 'params'), validate(updateSchema), asyncHandler(async (request, response) => {
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const currentResult = await client.query(
+        'SELECT id, role FROM users WHERE id = $1 AND company_id = $2 FOR UPDATE',
+        [request.params.id, request.auth.companyId]
+      );
+      const currentUser = currentResult.rows[0];
+      if (!currentUser) throw notFound('User not found');
+      if (request.params.id === request.auth.sub && request.body.role && request.body.role !== currentUser.role) {
+        throw new AppError(400, 'self_role_change', 'You cannot change your own administrator role');
+      }
+
+      const input = request.body;
+      const result = await client.query(
+        `UPDATE users SET
+           first_name = COALESCE($1, first_name),
+           last_name = CASE WHEN $2::boolean THEN $3 ELSE last_name END,
+           employee_code = CASE WHEN $4::boolean THEN $5 ELSE employee_code END,
+           job_title = CASE WHEN $6::boolean THEN $7 ELSE job_title END,
+           mobile_number = COALESCE($8, mobile_number),
+           country_code = CASE WHEN $9::boolean THEN $10 ELSE country_code END,
+           timezone = CASE WHEN $11::boolean THEN $12 ELSE timezone END,
+           email = CASE WHEN $13::boolean THEN $14 ELSE email END,
+           role = COALESCE($15, role),
+           updated_at = now()
+         WHERE id = $16 AND company_id = $17
+         RETURNING id, company_id, first_name, last_name, employee_code, job_title,
+                   mobile_number, country_code, timezone, email, role, status, updated_at`,
+        [input.firstName, Object.hasOwn(input, 'lastName'), input.lastName || null,
+          Object.hasOwn(input, 'employeeCode'), input.employeeCode || null,
+          Object.hasOwn(input, 'jobTitle'), input.jobTitle || null,
+          input.mobileNumber ? normalizeMobileNumber(input.mobileNumber) : null,
+          Object.hasOwn(input, 'countryCode'), input.countryCode || null,
+          Object.hasOwn(input, 'timezone'), input.timezone || null,
+          Object.hasOwn(input, 'email'), input.email || null,
+          input.role, request.params.id, request.auth.companyId]
+      );
+
+      if (input.departmentIds) {
+        await replaceUserDepartments(client, request.auth.companyId, request.params.id, input.departmentIds);
+      }
+      await client.query('COMMIT');
+      response.json({ user: result.rows[0] });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }));
+
+  router.patch('/:id/password', authorize('super_admin', 'company_admin'), validate(z.object({ id: z.string().uuid() }), 'params'), validate(passwordSchema), asyncHandler(async (request, response) => {
+    const passwordHash = await bcrypt.hash(request.body.newPassword, 12);
+    const result = await db.query(
+      `UPDATE users SET password_hash = $1, updated_at = now()
+       WHERE id = $2 AND company_id = $3
+       RETURNING id, first_name, last_name, updated_at`,
+      [passwordHash, request.params.id, request.auth.companyId]
+    );
+    if (!result.rows[0]) throw notFound('User not found');
+    response.json({ user: result.rows[0] });
   }));
 
   router.patch('/:id/status', authorize('super_admin', 'company_admin'), validate(z.object({ id: z.string().uuid() }), 'params'), validate(z.object({ status: z.enum(['active', 'inactive', 'suspended']) })), asyncHandler(async (request, response) => {

@@ -1,22 +1,25 @@
 import { StatusBar } from 'expo-status-bar';
 import {
   BriefcaseBusiness,
-  Building2,
   Check,
+  ChevronLeft,
   Eye,
   EyeOff,
+  KeyRound,
   LogOut,
   Mail,
   MessageCircle,
+  Pencil,
   Phone,
   RefreshCw,
+  Send,
   ShieldCheck,
   UserCheck,
   UserPlus,
   Users,
   UserX,
 } from 'lucide-react-native';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -29,11 +32,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { ApiError, createUser, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getUsers, login, updateUserStatus } from './src/api';
+import { ApiError, changeUserPassword, createUser, getConversationMessages, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getOrCreateDirectConversation, getUsers, login, sendConversationMessage, updateUser, updateUserStatus } from './src/api';
 import { sessionStorage } from './src/session-storage';
-import type { Company, Department, DirectoryUser, LoginInput, User, UserForm } from './src/types';
+import type { ChatMessage, Company, Department, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './src/types';
 
 const SESSION_KEY = 'bizchat_admin_token';
+const DEVELOPMENT_COMPANY_SLUG = 'icon';
 
 function companyInitials(name?: string) {
   if (!name) return 'BC';
@@ -104,7 +108,8 @@ export default function App() {
 }
 
 function AdminApp({ token, onLogout }: { token: string; onLogout: () => Promise<void> }) {
-  const [screen, setScreen] = useState<'users' | 'create'>('users');
+  const [screen, setScreen] = useState<'users' | 'people' | 'create' | 'edit' | 'password'>('users');
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [checkingRole, setCheckingRole] = useState(true);
 
@@ -123,10 +128,26 @@ function AdminApp({ token, onLogout }: { token: string; onLogout: () => Promise<
     return <PeopleDirectoryScreen token={token} onLogout={onLogout} />;
   }
 
-  return screen === 'users' ? (
-    <UserListScreen token={token} onCreate={() => setScreen('create')} onLogout={onLogout} />
-  ) : (
-    <CreateUserScreen token={token} onCreated={() => setScreen('users')} onBack={() => setScreen('users')} onLogout={onLogout} />
+  if (screen === 'create') {
+    return <CreateUserScreen token={token} onCreated={() => setScreen('users')} onBack={() => setScreen('users')} onLogout={onLogout} />;
+  }
+  if (screen === 'people') {
+    return <PeopleDirectoryScreen token={token} onBack={() => setScreen('users')} onLogout={onLogout} />;
+  }
+  if (screen === 'edit' && selectedUser) {
+    return <EditUserScreen token={token} user={selectedUser} onSaved={(user) => { setSelectedUser(user); setScreen('users'); }} onPassword={() => setScreen('password')} onBack={() => setScreen('users')} onLogout={onLogout} />;
+  }
+  if (screen === 'password' && selectedUser) {
+    return <ChangePasswordScreen token={token} user={selectedUser} onBack={() => setScreen('edit')} onDone={() => setScreen('edit')} onLogout={onLogout} />;
+  }
+  return (
+    <UserListScreen
+      token={token}
+      onCreate={() => setScreen('create')}
+      onPeople={() => setScreen('people')}
+      onEdit={(user) => { setSelectedUser(user); setScreen('edit'); }}
+      onLogout={onLogout}
+    />
   );
 }
 
@@ -143,7 +164,7 @@ function LoadingScreen() {
 
 function LoginScreen({ onAuthenticated }: { onAuthenticated: (token: string) => Promise<void> }) {
   const [values, setValues] = useState<LoginInput>({
-    companySlug: '',
+    companySlug: DEVELOPMENT_COMPANY_SLUG,
     mobileNumber: '',
     password: '',
   });
@@ -188,13 +209,6 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (token: string) => 
           </View>
 
           <Field
-            label="Company slug"
-            value={values.companySlug}
-            onChangeText={(companySlug) => setValues({ ...values, companySlug })}
-            autoCapitalize="none"
-            icon={<Building2 size={18} color="#69737d" />}
-          />
-          <Field
             label="Mobile number"
             value={values.mobileNumber}
             onChangeText={(mobileNumber) => setValues({ ...values, mobileNumber })}
@@ -226,7 +240,8 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (token: string) => 
   );
 }
 
-function PeopleDirectoryScreen({ token, onLogout }: { token: string; onLogout: () => Promise<void> }) {
+function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onBack?: () => void; onLogout: () => Promise<void> }) {
+  const [selectedPerson, setSelectedPerson] = useState<DirectoryUser | null>(null);
   const [company, setCompany] = useState<Company | null>(null);
   const [people, setPeople] = useState<DirectoryUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -257,6 +272,10 @@ function PeopleDirectoryScreen({ token, onLogout }: { token: string; onLogout: (
     loadPeople();
   }, [token]);
 
+  if (selectedPerson) {
+    return <DirectChatScreen token={token} person={selectedPerson} onBack={() => setSelectedPerson(null)} onLogout={onLogout} />;
+  }
+
   return (
     <View style={styles.flex}>
       <View style={styles.appHeader}>
@@ -269,7 +288,10 @@ function PeopleDirectoryScreen({ token, onLogout }: { token: string; onLogout: (
             <Text style={styles.headerSection}>People directory</Text>
           </View>
         </View>
-        <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
+        <View style={styles.headerActions}>
+          {onBack ? <IconButton label="Back to user administration" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark /> : null}
+          <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.listPage}>
@@ -324,10 +346,10 @@ function PeopleDirectoryScreen({ token, onLogout }: { token: string; onLogout: (
                       </View>
                     ) : null}
 
-                    <View style={[styles.statusAction, styles.chatComingSoon]}>
-                      <MessageCircle size={16} color="#69737d" />
-                      <Text style={styles.chatComingSoonText}>Direct chat next</Text>
-                    </View>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`Chat with ${fullName}`} onPress={() => setSelectedPerson(person)} style={({ pressed }) => [styles.statusAction, styles.chatAction, pressed && styles.pressed]}>
+                      <MessageCircle size={16} color="#13795b" />
+                      <Text style={styles.chatActionText}>Message</Text>
+                    </Pressable>
                   </View>
                 );
               })}
@@ -339,13 +361,140 @@ function PeopleDirectoryScreen({ token, onLogout }: { token: string; onLogout: (
   );
 }
 
+function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; person: DirectoryUser; onBack: () => void; onLogout: () => Promise<void> }) {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [draft, setDraft] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const messageListRef = useRef<ScrollView>(null);
+  const fullName = [person.first_name, person.last_name].filter(Boolean).join(' ');
+
+  async function handleApiError(apiError: unknown, fallback: string) {
+    if (apiError instanceof ApiError && apiError.status === 401) await onLogout();
+    else setError(apiError instanceof ApiError ? apiError.message : fallback);
+  }
+
+  async function loadMessages(id: string, showRefresh = false) {
+    if (showRefresh) setRefreshing(true);
+    try {
+      const result = await getConversationMessages(token, id);
+      setMessages(result);
+    } catch (loadError) {
+      await handleApiError(loadError, 'Messages could not be loaded.');
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    Promise.all([getCurrentUser(token), getOrCreateDirectConversation(token, person.id)])
+      .then(async ([user, conversation]) => {
+        if (!active) return;
+        setCurrentUser(user);
+        setConversationId(conversation.id);
+        const result = await getConversationMessages(token, conversation.id);
+        if (active) setMessages(result);
+      })
+      .catch((loadError) => handleApiError(loadError, 'The conversation could not be opened.'))
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [token, person.id]);
+
+  useEffect(() => {
+    if (!conversationId) return undefined;
+    const interval = setInterval(() => loadMessages(conversationId), 5000);
+    return () => clearInterval(interval);
+  }, [conversationId, token]);
+
+  async function handleSend() {
+    const content = draft.trim();
+    if (!content || !conversationId || sending) return;
+    setSending(true);
+    setError('');
+    try {
+      const message = await sendConversationMessage(token, conversationId, content);
+      setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message]);
+      setDraft('');
+    } catch (sendError) {
+      await handleApiError(sendError, 'The message could not be sent.');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <View style={styles.flex}>
+      <View style={styles.appHeader}>
+        <View style={styles.headerIdentity}>
+          <IconButton label="Back to people" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark />
+          <View style={styles.chatHeaderAvatar}><Text style={styles.userAvatarText}>{companyInitials(fullName)}</Text></View>
+          <View style={styles.flex}><Text style={styles.headerCompany}>{fullName}</Text><Text style={styles.headerSection}>{person.job_title || person.department_names?.join(', ') || 'Colleague'}</Text></View>
+        </View>
+        <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
+      </View>
+
+      {error ? <View style={styles.chatFeedback}><FeedbackMessage type="error" message={error} /></View> : null}
+      {loading ? <View style={[styles.flex, styles.centered]}><ActivityIndicator color="#13795b" /></View> : (
+        <>
+          <ScrollView
+            ref={messageListRef}
+            contentContainerStyle={[styles.messageList, messages.length === 0 && styles.emptyMessageList]}
+            onContentSizeChange={() => messageListRef.current?.scrollToEnd({ animated: true })}
+          >
+            {messages.length === 0 ? (
+              <View style={styles.emptyChat}>
+                <MessageCircle size={34} color="#7b8791" />
+                <Text style={styles.emptyTitle}>Start your conversation</Text>
+                <Text style={styles.emptyText}>Send the first message to {person.first_name}.</Text>
+              </View>
+            ) : messages.map((message) => {
+              const mine = message.sender_id === currentUser?.id;
+              return (
+                <View key={message.id} style={[styles.messageRow, mine ? styles.messageRowMine : styles.messageRowTheirs]}>
+                  <View style={[styles.messageBubble, mine ? styles.messageBubbleMine : styles.messageBubbleTheirs]}>
+                    <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.content}</Text>
+                    <Text style={[styles.messageTime, mine && styles.messageTimeMine]}>{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+          <Pressable accessibilityRole="button" accessibilityLabel="Refresh messages" disabled={refreshing || !conversationId} onPress={() => conversationId && loadMessages(conversationId, true)} style={({ pressed }) => [styles.chatRefresh, pressed && styles.pressed]}>
+            {refreshing ? <ActivityIndicator size="small" color="#13795b" /> : <RefreshCw size={14} color="#13795b" />}
+            <Text style={styles.refreshText}>Refresh</Text>
+          </Pressable>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <View style={styles.composer}>
+              <TextInput accessibilityLabel="Message" value={draft} onChangeText={setDraft} placeholder="Write a message" placeholderTextColor="#89939d" multiline maxLength={4000} style={styles.composerInput} />
+              <Pressable accessibilityRole="button" accessibilityLabel="Send message" disabled={!draft.trim() || sending || !conversationId} onPress={handleSend} style={({ pressed }) => [styles.sendButton, (!draft.trim() || sending || !conversationId) && styles.disabled, pressed && styles.primaryButtonPressed]}>
+                {sending ? <ActivityIndicator size="small" color="#ffffff" /> : <Send size={19} color="#ffffff" />}
+              </Pressable>
+            </View>
+          </KeyboardAvoidingView>
+        </>
+      )}
+    </View>
+  );
+}
+
 function UserListScreen({
   token,
   onCreate,
+  onPeople,
+  onEdit,
   onLogout,
 }: {
   token: string;
   onCreate: () => void;
+  onPeople: () => void;
+  onEdit: (user: User) => void;
   onLogout: () => Promise<void>;
 }) {
   const [company, setCompany] = useState<Company | null>(null);
@@ -421,10 +570,16 @@ function UserListScreen({
               <Text style={styles.screenTitle}>Users</Text>
               <Text style={styles.screenSubtitle}>{users.length} account{users.length === 1 ? '' : 's'} in this company</Text>
             </View>
-            <Pressable accessibilityRole="button" onPress={onCreate} style={({ pressed }) => [styles.compactPrimaryButton, pressed && styles.primaryButtonPressed]}>
-              <UserPlus size={17} color="#ffffff" />
-              <Text style={styles.compactPrimaryText}>Add user</Text>
-            </Pressable>
+            <View style={styles.titleActions}>
+              <Pressable accessibilityRole="button" onPress={onPeople} style={({ pressed }) => [styles.compactSecondaryButton, pressed && styles.pressed]}>
+                <MessageCircle size={17} color="#13795b" />
+                <Text style={styles.compactSecondaryText}>People</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={onCreate} style={({ pressed }) => [styles.compactPrimaryButton, pressed && styles.primaryButtonPressed]}>
+                <UserPlus size={17} color="#ffffff" />
+                <Text style={styles.compactPrimaryText}>Add user</Text>
+              </Pressable>
+            </View>
           </View>
 
           {error ? <FeedbackMessage type="error" message={error} /> : null}
@@ -475,28 +630,39 @@ function UserListScreen({
                       <Text style={styles.userDetailText}>{user.role === 'company_admin' ? 'Company admin' : user.role === 'super_admin' ? 'Super admin' : 'User'}</Text>
                     </View>
 
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={isCurrentUser || updatingId === user.id}
-                      onPress={() => handleStatusChange(user)}
-                      style={({ pressed }) => [
-                        styles.statusAction,
-                        isActive ? styles.statusActionSuspend : styles.statusActionActivate,
-                        (isCurrentUser || updatingId === user.id) && styles.disabled,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      {updatingId === user.id ? (
-                        <ActivityIndicator size="small" color={isActive ? '#a32d25' : '#13795b'} />
-                      ) : isActive ? (
-                        <UserX size={16} color="#a32d25" />
-                      ) : (
-                        <UserCheck size={16} color="#13795b" />
-                      )}
-                      <Text style={[styles.statusActionText, isActive ? styles.statusActionTextSuspend : styles.statusActionTextActivate]}>
-                        {isCurrentUser ? 'Current user' : isActive ? 'Suspend' : 'Activate'}
-                      </Text>
-                    </Pressable>
+                    <View style={styles.cardActions}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`View or edit ${fullName}`}
+                        onPress={() => onEdit(user)}
+                        style={({ pressed }) => [styles.statusAction, styles.editAction, pressed && styles.pressed]}
+                      >
+                        <Pencil size={16} color="#315f75" />
+                        <Text style={styles.editActionText}>View / Edit</Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={isCurrentUser || updatingId === user.id}
+                        onPress={() => handleStatusChange(user)}
+                        style={({ pressed }) => [
+                          styles.statusAction,
+                          isActive ? styles.statusActionSuspend : styles.statusActionActivate,
+                          (isCurrentUser || updatingId === user.id) && styles.disabled,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        {updatingId === user.id ? (
+                          <ActivityIndicator size="small" color={isActive ? '#a32d25' : '#13795b'} />
+                        ) : isActive ? (
+                          <UserX size={16} color="#a32d25" />
+                        ) : (
+                          <UserCheck size={16} color="#13795b" />
+                        )}
+                        <Text style={[styles.statusActionText, isActive ? styles.statusActionTextSuspend : styles.statusActionTextActivate]}>
+                          {isCurrentUser ? 'Current user' : isActive ? 'Suspend' : 'Activate'}
+                        </Text>
+                      </Pressable>
+                    </View>
                   </View>
                 );
               })}
@@ -504,6 +670,207 @@ function UserListScreen({
           )}
         </View>
       </ScrollView>
+    </View>
+  );
+}
+
+function EditUserScreen({
+  token,
+  user,
+  onSaved,
+  onPassword,
+  onBack,
+  onLogout,
+}: {
+  token: string;
+  user: User;
+  onSaved: (user: User) => void;
+  onPassword: () => void;
+  onBack: () => void;
+  onLogout: () => Promise<void>;
+}) {
+  const [form, setForm] = useState<UserEditForm>({
+    firstName: user.first_name,
+    lastName: user.last_name ?? '',
+    employeeCode: user.employee_code ?? '',
+    jobTitle: user.job_title ?? '',
+    mobileNumber: user.mobile_number,
+    countryCode: user.country_code ?? '',
+    timezone: user.timezone ?? '',
+    email: user.email ?? '',
+    role: user.role === 'user' ? 'user' : 'company_admin',
+    departmentIds: user.department_ids ?? [],
+  });
+  const [company, setCompany] = useState<Company | null>(null);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldName, string>>>({});
+
+  useEffect(() => {
+    Promise.all([getDepartments(token), getCurrentCompany(token)])
+      .then(([items, currentCompany]) => {
+        setDepartments(items.filter((department) => department.status === 'active'));
+        setCompany(currentCompany);
+      })
+      .catch(async (loadError) => {
+        if (loadError instanceof ApiError && loadError.status === 401) await onLogout();
+        else setError(loadError instanceof ApiError ? loadError.message : 'User details could not be loaded.');
+      })
+      .finally(() => setLoading(false));
+  }, [token, onLogout]);
+
+  function updateField(field: FieldName, value: string) {
+    setForm((current) => ({ ...current, [field]: value }));
+    if (fieldErrors[field]) setFieldErrors((current) => ({ ...current, [field]: undefined }));
+  }
+
+  function toggleDepartment(id: string) {
+    setForm((current) => ({
+      ...current,
+      departmentIds: current.departmentIds.includes(id)
+        ? current.departmentIds.filter((departmentId) => departmentId !== id)
+        : [...current.departmentIds, id],
+    }));
+  }
+
+  function validateEditForm() {
+    const nextErrors: Partial<Record<FieldName, string>> = {};
+    if (!form.firstName.trim()) nextErrors.firstName = 'First name is required.';
+    if (!/^\+[1-9]\d{6,14}$/.test(form.mobileNumber.trim().replace(/[\s().-]/g, ''))) {
+      nextErrors.mobileNumber = 'Use international format, for example +966536547919.';
+    }
+    if (form.countryCode.trim() && !/^[A-Za-z]{2}$/.test(form.countryCode.trim())) nextErrors.countryCode = 'Use a two-letter code such as IN or SA.';
+    if (form.timezone.trim() && !/^[A-Za-z_]+(?:\/[A-Za-z0-9_+\-]+)+$/.test(form.timezone.trim())) nextErrors.timezone = 'Use a timezone such as Asia/Kolkata.';
+    if (form.email.trim() && !/^\S+@\S+\.\S+$/.test(form.email.trim())) nextErrors.email = 'Enter a valid email address.';
+    setFieldErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  }
+
+  async function handleSave() {
+    setError('');
+    if (!validateEditForm()) return;
+    setSubmitting(true);
+    try {
+      const updated = await updateUser(token, user.id, form, user.role);
+      onSaved({ ...user, ...updated, department_ids: form.departmentIds, department_names: departments.filter((item) => form.departmentIds.includes(item.id)).map((item) => item.name) });
+    } catch (saveError) {
+      if (saveError instanceof ApiError && saveError.status === 401) await onLogout();
+      else setError(saveError instanceof ApiError ? saveError.message : 'The user details could not be saved.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const fullName = [user.first_name, user.last_name].filter(Boolean).join(' ');
+
+  return (
+    <View style={styles.flex}>
+      <View style={styles.appHeader}>
+        <View style={styles.headerIdentity}>
+          <View style={styles.smallBrandMark}><Text style={styles.smallBrandMarkText}>{companyInitials(company?.name)}</Text></View>
+          <View><Text style={styles.headerCompany}>{company?.name ?? 'BizChat'}</Text><Text style={styles.headerSection}>User administration</Text></View>
+        </View>
+        <View style={styles.headerActions}>
+          <IconButton label="Back to users" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark />
+          <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
+        </View>
+      </View>
+
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
+          <View style={styles.formInner}>
+            <View style={styles.titleRow}><View style={styles.flex}><Text style={styles.screenTitle}>User details</Text><Text style={styles.screenSubtitle}>View and update {fullName}'s account information.</Text></View></View>
+            {error ? <FeedbackMessage type="error" message={error} /> : null}
+            {loading ? <ActivityIndicator color="#13795b" style={styles.listLoader} /> : (
+              <>
+                <SectionLabel icon={<Pencil size={17} color="#13795b" />} label="Employee details" />
+                <View style={styles.twoColumnRow}>
+                  <View style={styles.column}><Field label="First name *" value={form.firstName} onChangeText={(value) => updateField('firstName', value)} error={fieldErrors.firstName} /></View>
+                  <View style={styles.column}><Field label="Last name" value={form.lastName} onChangeText={(value) => updateField('lastName', value)} /></View>
+                </View>
+                <View style={styles.twoColumnRow}>
+                  <View style={styles.column}><Field label="Employee code" value={form.employeeCode} onChangeText={(value) => updateField('employeeCode', value)} autoCapitalize="characters" /></View>
+                  <View style={styles.column}><Field label="Job title" value={form.jobTitle} onChangeText={(value) => updateField('jobTitle', value)} icon={<BriefcaseBusiness size={18} color="#69737d" />} /></View>
+                </View>
+                <Field label="Mobile number with country code *" value={form.mobileNumber} onChangeText={(value) => updateField('mobileNumber', value)} keyboardType="phone-pad" error={fieldErrors.mobileNumber} icon={<Phone size={18} color="#69737d" />} />
+                <View style={styles.twoColumnRow}>
+                  <View style={styles.column}><Field label="Work country code" value={form.countryCode} onChangeText={(value) => updateField('countryCode', value)} placeholder="IN" autoCapitalize="characters" maxLength={2} error={fieldErrors.countryCode} /></View>
+                  <View style={styles.column}><Field label="Work timezone" value={form.timezone} onChangeText={(value) => updateField('timezone', value)} placeholder="Asia/Kolkata" autoCapitalize="none" error={fieldErrors.timezone} /></View>
+                </View>
+                <Field label="Email" value={form.email} onChangeText={(value) => updateField('email', value)} keyboardType="email-address" autoCapitalize="none" error={fieldErrors.email} icon={<Mail size={18} color="#69737d" />} />
+
+                <SectionLabel icon={<ShieldCheck size={17} color="#13795b" />} label="Access" />
+                <Text style={styles.inputLabel}>Role</Text>
+                {user.role === 'super_admin' ? <View style={styles.readOnlyValue}><Text style={styles.readOnlyValueText}>Super admin</Text></View> : (
+                  <View style={styles.segmentedControl}>
+                    <Segment label="User" selected={form.role === 'user'} onPress={() => setForm({ ...form, role: 'user' })} />
+                    <Segment label="Company admin" selected={form.role === 'company_admin'} onPress={() => setForm({ ...form, role: 'company_admin' })} />
+                  </View>
+                )}
+                <Text style={styles.inputLabel}>Departments</Text>
+                <View style={styles.departmentGrid}>
+                  {departments.map((department) => {
+                    const selected = form.departmentIds.includes(department.id);
+                    return <Pressable key={department.id} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} onPress={() => toggleDepartment(department.id)} style={[styles.departmentOption, selected && styles.departmentOptionSelected]}><View style={[styles.checkbox, selected && styles.checkboxSelected]}>{selected ? <Check size={14} strokeWidth={3} color="#ffffff" /> : null}</View><Text style={[styles.departmentText, selected && styles.departmentTextSelected]}>{department.name}</Text></Pressable>;
+                  })}
+                </View>
+
+                <View style={styles.passwordShortcut}>
+                  <View style={styles.flex}><Text style={styles.passwordShortcutTitle}>Account password</Text><Text style={styles.passwordShortcutText}>Set a new password for this user.</Text></View>
+                  <Pressable accessibilityRole="button" onPress={onPassword} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}><KeyRound size={16} color="#13795b" /><Text style={styles.secondaryButtonText}>Change password</Text></Pressable>
+                </View>
+                <View style={styles.footerActions}><PrimaryButton label="Save changes" loading={submitting} onPress={handleSave} icon={<Check size={19} color="#ffffff" />} /></View>
+              </>
+            )}
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </View>
+  );
+}
+
+function ChangePasswordScreen({ token, user, onBack, onDone, onLogout }: { token: string; user: User; onBack: () => void; onDone: () => void; onLogout: () => Promise<void> }) {
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const fullName = [user.first_name, user.last_name].filter(Boolean).join(' ');
+
+  async function handleChangePassword() {
+    setError('');
+    if (newPassword.length < 8) return setError('Password must contain at least 8 characters.');
+    if (newPassword !== confirmPassword) return setError('The passwords do not match.');
+    setSubmitting(true);
+    try {
+      await changeUserPassword(token, user.id, newPassword);
+      onDone();
+    } catch (passwordError) {
+      if (passwordError instanceof ApiError && passwordError.status === 401) await onLogout();
+      else setError(passwordError instanceof ApiError ? passwordError.message : 'The password could not be changed.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <View style={styles.flex}>
+      <View style={styles.appHeader}>
+        <View style={styles.headerIdentity}><View style={styles.smallBrandMark}><KeyRound size={18} color="#202830" /></View><View><Text style={styles.headerCompany}>BizChat</Text><Text style={styles.headerSection}>Password management</Text></View></View>
+        <View style={styles.headerActions}><IconButton label="Back to user details" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark /><IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark /></View>
+      </View>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled"><View style={styles.passwordForm}>
+          <View style={styles.titleRow}><View style={styles.flex}><Text style={styles.screenTitle}>Change password</Text><Text style={styles.screenSubtitle}>Set a new sign-in password for {fullName}.</Text></View></View>
+          {error ? <FeedbackMessage type="error" message={error} /> : null}
+          <Field label="New password *" value={newPassword} onChangeText={setNewPassword} secureTextEntry={!showPassword} autoCapitalize="none" rightAction={<IconButton label={showPassword ? 'Hide password' : 'Show password'} onPress={() => setShowPassword(!showPassword)} icon={showPassword ? <EyeOff size={19} color="#4d5964" /> : <Eye size={19} color="#4d5964" />} />} />
+          <Field label="Confirm new password *" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry={!showPassword} autoCapitalize="none" />
+          <Text style={styles.passwordHint}>Use at least 8 characters. The new password takes effect immediately.</Text>
+          <View style={styles.footerActions}><PrimaryButton label="Update password" loading={submitting} onPress={handleChangePassword} icon={<KeyRound size={18} color="#ffffff" />} /></View>
+        </View></ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -863,8 +1230,11 @@ const styles = StyleSheet.create({
   listPage: { paddingHorizontal: 18, paddingTop: 24, paddingBottom: 44 },
   listInner: { width: '100%', maxWidth: 720, alignSelf: 'center' },
   listTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 18 },
+  titleActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
   compactPrimaryButton: { minHeight: 42, borderRadius: 7, backgroundColor: '#13795b', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 14 },
   compactPrimaryText: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
+  compactSecondaryButton: { minHeight: 42, borderWidth: 1, borderColor: '#9bcbb7', borderRadius: 7, backgroundColor: '#eef8f4', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 14 },
+  compactSecondaryText: { color: '#13795b', fontSize: 13, fontWeight: '700' },
   refreshButton: { alignSelf: 'flex-end', minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 9, marginBottom: 12 },
   refreshText: { color: '#13795b', fontSize: 13, fontWeight: '600' },
   listLoader: { marginVertical: 50 },
@@ -888,6 +1258,9 @@ const styles = StyleSheet.create({
   userDetails: { borderTopWidth: 1, borderTopColor: '#edf0f2', marginTop: 13, paddingTop: 11, gap: 5 },
   userDetailText: { color: '#5d6973', fontSize: 12 },
   statusAction: { alignSelf: 'flex-end', minHeight: 36, borderRadius: 6, borderWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 11, marginTop: 12 },
+  cardActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
+  editAction: { borderColor: '#bfd3dc', backgroundColor: '#f1f7f9' },
+  editActionText: { color: '#315f75', fontSize: 12, fontWeight: '700' },
   statusActionSuspend: { borderColor: '#edc1bd', backgroundColor: '#fff5f4' },
   statusActionActivate: { borderColor: '#b8ddcd', backgroundColor: '#eef8f4' },
   statusActionText: { fontSize: 12, fontWeight: '700' },
@@ -895,6 +1268,27 @@ const styles = StyleSheet.create({
   statusActionTextActivate: { color: '#13795b' },
   chatComingSoon: { borderColor: '#d4dbe0', backgroundColor: '#f7f9fa' },
   chatComingSoonText: { color: '#69737d', fontSize: 12, fontWeight: '700' },
+  chatAction: { borderColor: '#9bcbb7', backgroundColor: '#eef8f4' },
+  chatActionText: { color: '#13795b', fontSize: 12, fontWeight: '700' },
+  chatHeaderAvatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#e2f1eb', alignItems: 'center', justifyContent: 'center' },
+  chatFeedback: { paddingHorizontal: 16, paddingTop: 14, backgroundColor: '#f4f6f8' },
+  messageList: { flexGrow: 1, paddingHorizontal: 16, paddingTop: 18, paddingBottom: 12, backgroundColor: '#eef1f3' },
+  emptyMessageList: { justifyContent: 'center' },
+  emptyChat: { alignItems: 'center', alignSelf: 'center', maxWidth: 300, padding: 24 },
+  messageRow: { width: '100%', marginBottom: 9 },
+  messageRowMine: { alignItems: 'flex-end' },
+  messageRowTheirs: { alignItems: 'flex-start' },
+  messageBubble: { maxWidth: '82%', borderRadius: 14, paddingHorizontal: 13, paddingTop: 9, paddingBottom: 7 },
+  messageBubbleMine: { backgroundColor: '#13795b', borderBottomRightRadius: 4 },
+  messageBubbleTheirs: { backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#d9dfe3', borderBottomLeftRadius: 4 },
+  messageText: { color: '#25323b', fontSize: 15, lineHeight: 21 },
+  messageTextMine: { color: '#ffffff' },
+  messageTime: { color: '#7b8791', fontSize: 9, marginTop: 4, textAlign: 'right' },
+  messageTimeMine: { color: '#cce8dd' },
+  chatRefresh: { minHeight: 32, paddingHorizontal: 16, backgroundColor: '#eef1f3', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 },
+  composer: { minHeight: 66, borderTopWidth: 1, borderTopColor: '#d5dce1', backgroundColor: '#ffffff', paddingHorizontal: 12, paddingVertical: 9, flexDirection: 'row', alignItems: 'flex-end', gap: 9 },
+  composerInput: { flex: 1, maxHeight: 110, minHeight: 46, borderWidth: 1, borderColor: '#cbd2d8', borderRadius: 22, color: '#182129', fontSize: 15, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10 },
+  sendButton: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#13795b', alignItems: 'center', justifyContent: 'center' },
   formPage: { paddingHorizontal: 18, paddingTop: 24, paddingBottom: 44 },
   formInner: { width: '100%', maxWidth: 620, alignSelf: 'center' },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 24 },
@@ -915,5 +1309,14 @@ const styles = StyleSheet.create({
   checkboxSelected: { borderColor: '#13795b', backgroundColor: '#13795b' },
   departmentText: { flex: 1, color: '#3c4852', fontSize: 13, fontWeight: '500', letterSpacing: 0 },
   departmentTextSelected: { color: '#095b40', fontWeight: '700' },
+  readOnlyValue: { minHeight: 44, borderWidth: 1, borderColor: '#d5dce1', borderRadius: 7, backgroundColor: '#f4f6f8', justifyContent: 'center', paddingHorizontal: 13, marginBottom: 18 },
+  readOnlyValueText: { color: '#4c5963', fontSize: 13, fontWeight: '600' },
+  passwordShortcut: { borderWidth: 1, borderColor: '#d8dee3', borderRadius: 8, backgroundColor: '#ffffff', padding: 14, flexDirection: Platform.OS === 'web' ? 'row' : 'column', alignItems: Platform.OS === 'web' ? 'center' : 'stretch', gap: 12, marginTop: 4, marginBottom: 16 },
+  passwordShortcutTitle: { color: '#27343e', fontSize: 14, fontWeight: '700' },
+  passwordShortcutText: { color: '#69737d', fontSize: 12, marginTop: 4 },
+  secondaryButton: { minHeight: 40, borderWidth: 1, borderColor: '#9bcbb7', borderRadius: 7, backgroundColor: '#eef8f4', paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  secondaryButtonText: { color: '#13795b', fontSize: 12, fontWeight: '700' },
+  passwordForm: { width: '100%', maxWidth: 500, alignSelf: 'center' },
+  passwordHint: { color: '#69737d', fontSize: 12, lineHeight: 18, marginTop: -4, marginBottom: 16 },
   footerActions: { marginTop: 8 },
 });

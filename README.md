@@ -162,10 +162,17 @@ Facility and smart office controls should be added only after the core communica
 - Mobile admins can navigate to Add User, return automatically to Users after creation, refresh the list, and activate/suspend other users without suspending themselves
 - Production user-list API now includes department names and was deployed under PM2; visual verification passed with all three iCON accounts and no browser errors
 - Mobile landing is role-aware: Company Admins open User Administration while regular users open a read-only People Directory
+- Mobile admins can open a User Details screen, edit employee/contact/access fields, and update department assignments
+- Mobile admins can set a new password for a company user from a dedicated Change Password screen
+- User updates and password resets are company-scoped in the backend, and admins cannot remove their own administrator role
+- Production `bizchat-api` now includes the user edit and password-reset routes; PM2 restart and public HTTPS health verification passed
+- Direct Chat MVP is implemented: users and Company Admins can open People, start or reuse a one-to-one conversation, load stored messages, send text messages, and receive five-second refresh updates
+- Direct conversations and messages enforce authenticated company membership on the backend; the production route is deployed under PM2
 - The production `/api/users/directory` endpoint returns only active colleagues from the signed-in user's company, excludes the requester, and does not expose admin-only contact/status controls
 - Production verification as Mrudul's real `user` role returned HTTP 200 with both active Manoj colleagues; the admin visual regression also passed without browser errors
 - Expo web production is deployed on Vercel at `https://bizchat-wine.vercel.app` and visually verified with the production API configuration
 - Vercel web requests use the same-origin `/api` path, which Vercel securely proxies to the VPS API to avoid client-side DNS and cross-origin connectivity problems
+- During development, sign-in defaults internally to company slug `icon`, so users enter only their mobile number and password
 - Express trusts the single production Nginx proxy so login rate limiting reads forwarded visitor addresses correctly
 - GitHub source is available at `https://github.com/Devsoft-MC/bizchat` on branch `main`
 
@@ -190,11 +197,10 @@ npm start
 Web preview URL: `http://localhost:8081`
 
 ## Tomorrow Start Point
-- Add User Details/Edit screen
-- Add Change Password screen
-- Build Direct Chat from People Directory
+- Add a conversation inbox with latest-message previews
+- Add Socket.IO realtime delivery to replace refresh polling
 - Add backend integration tests using a disposable PostgreSQL test database
-- Continue with department and user update APIs after the mobile flow is verified
+- Continue with department update APIs after the mobile flow is verified
 
 ## Notes on Future Growth
 - Voice and video call support should be planned now using reserved schema tables
