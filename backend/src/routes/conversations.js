@@ -13,9 +13,16 @@ async function requireMembership(db, conversationId, auth) {
   const result = await db.query(
     `SELECT c.id
      FROM conversations c
-     JOIN conversation_members cm ON cm.conversation_id = c.id
-     WHERE c.id = $1 AND c.company_id = $2 AND cm.user_id = $3
-       AND cm.left_at IS NULL AND c.is_archived = false`,
+     JOIN conversation_members requester
+       ON requester.conversation_id = c.id
+      AND requester.user_id = $3
+      AND requester.left_at IS NULL
+     WHERE c.id = $1 AND c.company_id = $2
+       AND c.conversation_type = 'direct' AND c.is_archived = false
+       AND (SELECT count(*)
+            FROM conversation_members recipient_scope
+            WHERE recipient_scope.conversation_id = c.id
+              AND recipient_scope.left_at IS NULL) = 2`,
     [conversationId, auth.companyId, auth.sub]
   );
   if (!result.rows[0]) throw notFound('Conversation not found');

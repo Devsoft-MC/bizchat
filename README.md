@@ -168,6 +168,7 @@ Facility and smart office controls should be added only after the core communica
 - Production `bizchat-api` now includes the user edit and password-reset routes; PM2 restart and public HTTPS health verification passed
 - Direct Chat MVP is implemented: users and Company Admins can open People, start or reuse a one-to-one conversation, load stored messages, send text messages, and receive five-second refresh updates
 - Direct conversations and messages enforce authenticated company membership on the backend; the production route is deployed under PM2
+- Direct-chat privacy is recipient-only: only the two active conversation members can read or send messages, and Company Admin/Super Admin roles receive no chat-viewing bypass
 - The production `/api/users/directory` endpoint returns only active colleagues from the signed-in user's company, excludes the requester, and does not expose admin-only contact/status controls
 - Production verification as Mrudul's real `user` role returned HTTP 200 with both active Manoj colleagues; the admin visual regression also passed without browser errors
 - Expo web production is deployed on Vercel at `https://bizchat-wine.vercel.app` and visually verified with the production API configuration

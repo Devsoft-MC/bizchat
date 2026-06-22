@@ -61,6 +61,27 @@ test('company data is scoped to the company in the token', async () => {
   assert.deepEqual(queryValues, [companyId]);
 });
 
+test('direct-chat messages are hidden from users who are not recipients', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const outsiderId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const conversationId = '27a87832-8c4f-4971-843a-a92de1149263';
+  const token = jwt.sign({ sub: outsiderId, companyId, role: 'company_admin' }, env.JWT_SECRET);
+  let messageQueryReached = false;
+  const db = fakeDb(async (sql, values) => {
+    if (sql.includes('FROM messages')) messageQueryReached = true;
+    assert.deepEqual(values, [conversationId, companyId, outsiderId]);
+    return { rows: [] };
+  });
+
+  const response = await request(createApp(db))
+    .get(`/api/conversations/${conversationId}/messages`)
+    .set('Authorization', `Bearer ${token}`);
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body.error.code, 'not_found');
+  assert.equal(messageQueryReached, false);
+});
+
 test('unknown API routes return a structured 404', async () => {
   const response = await request(createApp(fakeDb())).get('/api/missing');
   assert.equal(response.status, 404);

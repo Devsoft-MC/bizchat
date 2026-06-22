@@ -51,6 +51,8 @@ the `companies` table is empty. After setup, authenticate with
 - `GET /api/conversations/:id/messages` - list messages for an authenticated conversation member
 - `POST /api/conversations/:id/messages` - send a text message as an authenticated conversation member
 
+Direct chats are private to exactly two active conversation members. Administrative roles do not grant access to conversations unless that administrator is one of those two recipients.
+
 ## Create iCON Systems Locally
 
 After applying `database/migrations/001_user_location.sql`, run:
