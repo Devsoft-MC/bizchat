@@ -260,6 +260,7 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const notificationSnapshot = useRef<Map<string, string | null>>(new Map());
+  const notifiedMessageIds = useRef<Set<string>>(new Set());
   const notificationInitialized = useRef(false);
 
   const unreadTotal = conversations.reduce((total, item) => total + Number(item.unread_count || 0), 0);
@@ -269,12 +270,18 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
       const items = await getConversations(token);
       if (notificationInitialized.current && Platform.OS === 'web' && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         items.forEach((item) => {
-          const knownConversation = notificationSnapshot.current.has(item.id);
+          const lastMessageId = item.last_message_id;
           const previousMessageId = notificationSnapshot.current.get(item.id);
-          if (item.unread_count > 0 && item.last_message_id && knownConversation && previousMessageId !== item.last_message_id && selectedPerson?.id !== item.participant_id) {
+          const isNewUnreadMessage = item.unread_count > 0
+            && lastMessageId
+            && previousMessageId !== item.last_message_id
+            && !notifiedMessageIds.current.has(lastMessageId)
+            && selectedPerson?.id !== item.participant_id;
+          if (isNewUnreadMessage) {
             const senderName = [item.participant_first_name, item.participant_last_name].filter(Boolean).join(' ');
             const body = item.last_message_type === 'text' ? item.last_message_content || 'New message' : 'Sent an attachment';
             new Notification(senderName, { body, tag: `bizchat-${item.id}` });
+            notifiedMessageIds.current.add(lastMessageId);
           }
         });
       }
@@ -324,6 +331,15 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
     return <ConversationInboxScreen conversations={conversations} onSelect={(person) => { setShowInbox(false); setSelectedPerson(person); }} onBack={() => setShowInbox(false)} onEnableNotifications={async () => {
       if (Platform.OS !== 'web' || typeof Notification === 'undefined') return;
       await Notification.requestPermission();
+    }} onTestNotification={async () => {
+      if (Platform.OS !== 'web' || typeof Notification === 'undefined') return false;
+      if (Notification.permission === 'default') await Notification.requestPermission();
+      if (Notification.permission !== 'granted') return false;
+      new Notification('BizChat test alert', {
+        body: 'Chrome notifications are working for this browser.',
+        tag: `bizchat-test-${Date.now()}`,
+      });
+      return true;
     }} onLogout={onLogout} />;
   }
 
@@ -416,14 +432,21 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
   );
 }
 
-function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNotifications, onLogout }: { conversations: ConversationSummary[]; onSelect: (person: DirectoryUser) => void; onBack: () => void; onEnableNotifications: () => Promise<void>; onLogout: () => Promise<void> }) {
+function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNotifications, onTestNotification, onLogout }: { conversations: ConversationSummary[]; onSelect: (person: DirectoryUser) => void; onBack: () => void; onEnableNotifications: () => Promise<void>; onTestNotification: () => Promise<boolean>; onLogout: () => Promise<void> }) {
   const [permission, setPermission] = useState(
     Platform.OS === 'web' && typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
   );
+  const [testMessage, setTestMessage] = useState('');
 
   async function enableNotifications() {
     await onEnableNotifications();
     if (Platform.OS === 'web' && typeof Notification !== 'undefined') setPermission(Notification.permission);
+  }
+
+  async function testNotification() {
+    const shown = await onTestNotification();
+    if (Platform.OS === 'web' && typeof Notification !== 'undefined') setPermission(Notification.permission);
+    setTestMessage(shown ? 'Test alert sent. If you do not see it, check macOS Chrome notification settings and Focus mode.' : 'Chrome notification permission is not granted for this site.');
   }
 
   return (
@@ -439,8 +462,12 @@ function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNoti
         <View style={styles.listInner}>
           <View style={styles.listTitleRow}>
             <View style={styles.flex}><Text style={styles.screenTitle}>Messages</Text><Text style={styles.screenSubtitle}>Unread messages and recent conversations.</Text></View>
-            {permission === 'default' ? <Pressable accessibilityRole="button" onPress={enableNotifications} style={({ pressed }) => [styles.compactSecondaryButton, pressed && styles.pressed]}><Bell size={16} color="#13795b" /><Text style={styles.compactSecondaryText}>Enable alerts</Text></Pressable> : null}
+            <View style={styles.titleActions}>
+              {permission === 'default' ? <Pressable accessibilityRole="button" onPress={enableNotifications} style={({ pressed }) => [styles.compactSecondaryButton, pressed && styles.pressed]}><Bell size={16} color="#13795b" /><Text style={styles.compactSecondaryText}>Enable alerts</Text></Pressable> : null}
+              {permission === 'granted' ? <Pressable accessibilityRole="button" onPress={testNotification} style={({ pressed }) => [styles.compactSecondaryButton, pressed && styles.pressed]}><Bell size={16} color="#13795b" /><Text style={styles.compactSecondaryText}>Test alert</Text></Pressable> : null}
+            </View>
           </View>
+          {testMessage ? <FeedbackMessage type={permission === 'granted' ? 'success' : 'error'} message={testMessage} /> : null}
           {permission === 'denied' ? <FeedbackMessage type="error" message="Browser notifications are blocked. Enable them in your browser site settings." /> : null}
           {conversations.length === 0 ? (
             <View style={styles.emptyState}><Bell size={30} color="#7b8791" /><Text style={styles.emptyTitle}>No conversations yet</Text><Text style={styles.emptyText}>Your recent chats and unread messages will appear here.</Text></View>
