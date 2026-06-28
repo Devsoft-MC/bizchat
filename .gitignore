@@ -8,6 +8,8 @@ coverage/
 .DS_Store
 backend/node_modules/
 backend/.env
+backend/firebase-service-account*.json
+*firebase-adminsdk*.json
 backend/coverage/
 backend/uploads/
 *.log

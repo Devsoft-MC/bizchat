@@ -1,0 +1,13 @@
+# Copy to /etc/livekit.yaml and replace both credential placeholders.
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+
+keys:
+  replace-with-api-key: replace-with-long-api-secret
+
+logging:
+  level: info

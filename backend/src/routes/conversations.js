@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { asyncHandler } from '../lib/async-handler.js';
 import { AppError, notFound } from '../lib/errors.js';
+import { sendPushNotifications } from '../lib/push-notifications.js';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
@@ -22,13 +23,22 @@ const allowedMimeTypes = new Set([
   'text/plain',
   'text/csv'
 ]);
+const audioMimeTypesByExtension = new Map([
+  ['.aac', 'audio/aac'],
+  ['.m4a', 'audio/mp4'],
+  ['.mp3', 'audio/mpeg'],
+  ['.ogg', 'audio/ogg'],
+  ['.wav', 'audio/wav'],
+  ['.webm', 'audio/webm'],
+  ['.3gp', 'audio/3gpp']
+]);
 
 function safeFileName(value) {
   return path.basename(value || 'attachment').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180) || 'attachment';
 }
 
 function isAllowedMimeType(mimeType) {
-  return mimeType.startsWith('image/') || allowedMimeTypes.has(mimeType);
+  return mimeType.startsWith('image/') || mimeType.startsWith('audio/') || allowedMimeTypes.has(mimeType);
 }
 
 async function parseMultipartFile(request) {
@@ -54,11 +64,15 @@ async function parseMultipartFile(request) {
   const fileEnd = body.indexOf(endMarker, fileStart);
   if (!fileNameMatch || fileEnd < fileStart) throw new AppError(400, 'invalid_upload', 'Choose one file to upload');
   const data = body.subarray(fileStart, fileEnd);
-  const mimeType = (mimeTypeMatch?.[1] || 'application/octet-stream').trim().toLowerCase();
+  const fileName = safeFileName(fileNameMatch?.[1]);
+  const suppliedMimeType = (mimeTypeMatch?.[1] || 'application/octet-stream').trim().toLowerCase();
+  const mimeType = suppliedMimeType === 'application/octet-stream'
+    ? audioMimeTypesByExtension.get(path.extname(fileName).toLowerCase()) || suppliedMimeType
+    : suppliedMimeType;
   if (!data.length) throw new AppError(400, 'empty_file', 'The selected file is empty');
   if (data.length > MAX_FILE_BYTES) throw new AppError(413, 'file_too_large', 'Files must be 10 MB or smaller');
-  if (!isAllowedMimeType(mimeType)) throw new AppError(400, 'unsupported_file_type', 'Upload an image, PDF, text, Word, or Excel file');
-  return { data, fileName: safeFileName(fileNameMatch[1]), mimeType };
+  if (!isAllowedMimeType(mimeType)) throw new AppError(400, 'unsupported_file_type', 'Upload an image, audio message, PDF, text, Word, or Excel file');
+  return { data, fileName, mimeType };
 }
 
 async function requireMembership(db, conversationId, auth) {
@@ -78,6 +92,57 @@ async function requireMembership(db, conversationId, auth) {
     [conversationId, auth.companyId, auth.sub]
   );
   if (!result.rows[0]) throw notFound('Conversation not found');
+}
+
+async function notifyConversationRecipients(db, { companyId, conversationId, senderId, message }) {
+  try {
+    const result = await db.query(
+      `SELECT sender.first_name AS sender_first_name, sender.last_name AS sender_last_name,
+              recipient.id AS recipient_id,
+              array_remove(array_agg(device.push_token), NULL) AS push_tokens
+       FROM users sender
+       JOIN conversation_members recipient_member
+         ON recipient_member.conversation_id = $2
+        AND recipient_member.user_id <> $3
+        AND recipient_member.left_at IS NULL
+       JOIN users recipient
+         ON recipient.id = recipient_member.user_id
+        AND recipient.company_id = $1
+        AND recipient.status = 'active'
+       LEFT JOIN user_devices device
+         ON device.user_id = recipient.id
+        AND device.company_id = $1
+        AND device.status = 'active'
+        AND device.push_token IS NOT NULL
+       WHERE sender.id = $3 AND sender.company_id = $1
+       GROUP BY sender.id, recipient.id`,
+      [companyId, conversationId, senderId]
+    );
+    const sender = result.rows[0];
+    const pushTokens = result.rows.flatMap((row) => row.push_tokens || []);
+    if (!sender || !pushTokens.length) return;
+
+    const senderName = [sender.sender_first_name, sender.sender_last_name].filter(Boolean).join(' ') || 'BizChat';
+    const body = message.message_type === 'text'
+      ? message.content || 'New message'
+      : message.message_type === 'audio' ? 'Sent a voice message' : 'Sent an attachment';
+    const delivery = await sendPushNotifications(pushTokens, { title: senderName, body }, {
+      type: 'direct_message',
+      conversationId,
+      messageId: message.id,
+      senderId
+    });
+    if (delivery.invalidTokens.length) {
+      await db.query(
+        `UPDATE user_devices
+         SET status = 'revoked', updated_at = now()
+         WHERE company_id = $1 AND push_token = ANY($2::text[])`,
+        [companyId, delivery.invalidTokens]
+      );
+    }
+  } catch (error) {
+    console.warn('Push notification could not be sent', error);
+  }
 }
 
 export function createConversationsRouter(db) {
@@ -228,7 +293,8 @@ export function createConversationsRouter(db) {
         `INSERT INTO messages (company_id, conversation_id, sender_id, message_type)
          VALUES ($1, $2, $3, $4)
          RETURNING id, conversation_id, sender_id, message_type, content, edited_at, created_at`,
-        [request.auth.companyId, request.params.id, request.auth.sub, upload.mimeType.startsWith('image/') ? 'image' : 'file']
+        [request.auth.companyId, request.params.id, request.auth.sub,
+          upload.mimeType.startsWith('image/') ? 'image' : upload.mimeType.startsWith('audio/') ? 'audio' : 'file']
       );
       const message = messageResult.rows[0];
       const attachmentResult = await client.query(
@@ -237,7 +303,7 @@ export function createConversationsRouter(db) {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id, file_name, mime_type, file_size`,
         [request.auth.companyId, message.id, upload.fileName, storedName,
-          upload.mimeType.startsWith('image/') ? 'image' : 'file', upload.mimeType,
+          upload.mimeType.startsWith('image/') ? 'image' : upload.mimeType.startsWith('audio/') ? 'audio' : 'file', upload.mimeType,
           upload.data.length, createHash('sha256').update(upload.data).digest('hex'), request.auth.sub]
       );
       await client.query(
@@ -253,6 +319,12 @@ export function createConversationsRouter(db) {
         [message.id, request.auth.sub, request.params.id]
       );
       await client.query('COMMIT');
+      await notifyConversationRecipients(db, {
+        companyId: request.auth.companyId,
+        conversationId: request.params.id,
+        senderId: request.auth.sub,
+        message
+      });
       response.status(201).json({ message: { ...message, attachments: attachmentResult.rows } });
     } catch (error) {
       await client.query('ROLLBACK');
@@ -308,6 +380,12 @@ export function createConversationsRouter(db) {
         [message.id, request.auth.sub, request.params.id]
       );
       await client.query('COMMIT');
+      await notifyConversationRecipients(db, {
+        companyId: request.auth.companyId,
+        conversationId: request.params.id,
+        senderId: request.auth.sub,
+        message
+      });
       response.status(201).json({ message });
     } catch (error) {
       await client.query('ROLLBACK');

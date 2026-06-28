@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
-import type { ChatMessage, Company, ConversationSummary, Department, DirectConversation, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './types';
+import { fetch as expoFetch } from 'expo/fetch';
+import { File } from 'expo-file-system';
+import type { Call, CallSession, CallType, ChatMessage, Company, ConversationSummary, Department, DeviceType, DirectConversation, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './types';
 
 const defaultApiUrl = Platform.OS === 'web'
   ? '/api'
@@ -62,6 +64,61 @@ export async function login(input: LoginInput) {
 export async function getCurrentUser(token: string) {
   const result = await apiRequest<{ user: User }>('/auth/me', {}, token);
   return result.user;
+}
+
+export async function registerPushToken(token: string, pushToken: string, deviceType: DeviceType, deviceName?: string) {
+  return apiRequest<{ device: { id: string } }>('/devices/push-token', {
+    method: 'POST',
+    body: JSON.stringify({ pushToken, deviceType, deviceName }),
+  }, token);
+}
+
+export async function unregisterPushToken(token: string, pushToken: string) {
+  return apiRequest<{ revoked: boolean }>('/devices/push-token', {
+    method: 'DELETE',
+    body: JSON.stringify({ pushToken }),
+  }, token);
+}
+
+export async function getIncomingCall(token: string) {
+  const result = await apiRequest<{ call: Call | null }>('/calls/incoming', {}, token);
+  return result.call;
+}
+
+export async function getCall(token: string, callId: string) {
+  const result = await apiRequest<{ call: Call }>(`/calls/${callId}`, {}, token);
+  return result.call;
+}
+
+export async function startCall(token: string, conversationId: string, participantId: string, callType: CallType) {
+  const result = await apiRequest<{ call: Call }>('/calls', {
+    method: 'POST',
+    body: JSON.stringify({ conversationId, participantId, callType }),
+  }, token);
+  return result.call;
+}
+
+export async function respondToCall(token: string, callId: string, action: 'accept' | 'decline' | 'busy') {
+  const result = await apiRequest<{ call: Call }>(`/calls/${callId}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  }, token);
+  return result.call;
+}
+
+export async function getCallSession(token: string, callId: string, displayName: string): Promise<CallSession> {
+  const result = await apiRequest<{ call: Call; livekit: CallSession['livekit'] }>(`/calls/${callId}/token`, {
+    method: 'POST',
+  }, token);
+  return { ...result, displayName };
+}
+
+export async function endCall(token: string, callId: string, reason: 'completed' | 'cancelled' | 'failed' | 'unanswered' = 'completed') {
+  const result = await apiRequest<{ call: Call }>(`/calls/${callId}/end`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  }, token);
+  return result.call;
 }
 
 export async function getDepartments(token: string) {
@@ -132,6 +189,26 @@ export async function uploadConversationAttachment(token: string, conversationId
   return data.message as ChatMessage;
 }
 
+export async function uploadConversationAttachmentFromUri(token: string, conversationId: string, uri: string, fileName: string, mimeType: string) {
+  const form = new FormData();
+  const nativeFile = new File(uri);
+  const uploadFile = nativeFile.type ? nativeFile : nativeFile.slice(0, nativeFile.size, mimeType);
+  form.append('file', uploadFile, fileName);
+  let response: Response;
+  try {
+    response = await expoFetch(`${API_URL}/conversations/${conversationId}/attachments`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+  } catch {
+    throw new ApiError('Cannot reach the BizChat server. Check your connection.', 0, 'network_error');
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(data?.error?.message || 'The voice message could not be uploaded.', response.status, data?.error?.code);
+  return data.message as ChatMessage;
+}
+
 export async function downloadConversationAttachment(token: string, conversationId: string, attachmentId: string) {
   const response = await fetch(`${API_URL}/conversations/${conversationId}/attachments/${attachmentId}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -141,6 +218,13 @@ export async function downloadConversationAttachment(token: string, conversation
     throw new ApiError(data?.error?.message || 'The attachment could not be downloaded.', response.status, data?.error?.code);
   }
   return response.blob();
+}
+
+export function getConversationAttachmentAudioSource(token: string, conversationId: string, attachmentId: string) {
+  return {
+    uri: `${API_URL}/conversations/${conversationId}/attachments/${attachmentId}`,
+    headers: { Authorization: `Bearer ${token}` },
+  };
 }
 
 export async function updateUserStatus(token: string, userId: string, status: User['status']) {

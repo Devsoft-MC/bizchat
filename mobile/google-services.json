@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "657297301149",
+    "project_id": "bizchat-585c3",
+    "storage_bucket": "bizchat-585c3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:657297301149:android:256b2c26a2e64ed1073e74",
+        "android_client_info": {
+          "package_name": "com.devsoftmc.bizchat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBH4Run_0E0cGKLBYd3LFmdh7i4lMAgiJU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

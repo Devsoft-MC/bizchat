@@ -16,9 +16,12 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
+    "firebase-admin": "13.6.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
+    "livekit-server-sdk": "^2.15.5",
     "pg": "^8.16.3",
+    "socket.io": "^4.8.3",
     "zod": "^4.1.12"
   },
   "devDependencies": {

@@ -66,7 +66,7 @@ export type ChatMessage = {
   id: string;
   conversation_id: string;
   sender_id: string;
-  message_type: 'text' | 'image' | 'file';
+  message_type: 'text' | 'image' | 'file' | 'audio';
   content: string | null;
   edited_at: string | null;
   created_at: string;
@@ -105,4 +105,33 @@ export type Company = {
   country: string | null;
   timezone: string;
   logo_url: string | null;
+};
+
+export type DeviceType = 'web' | 'ios' | 'android';
+
+export type CallType = 'audio' | 'video';
+export type CallStatus = 'scheduled' | 'ringing' | 'ongoing' | 'ended' | 'cancelled' | 'declined' | 'missed' | 'failed';
+
+export type Call = {
+  id: string;
+  company_id?: string;
+  conversation_id: string;
+  created_by: string;
+  call_type: CallType;
+  status: CallStatus;
+  room_name?: string;
+  participant_status?: 'invited' | 'accepted' | 'joined' | 'left' | 'declined' | 'missed' | 'busy';
+  participant_ids?: string[];
+  caller_first_name?: string;
+  caller_last_name?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  end_reason?: string | null;
+  created_at: string;
+};
+
+export type CallSession = {
+  call: Call;
+  livekit: { url: string; token: string };
+  displayName: string;
 };

@@ -1,5 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
+import * as DocumentPicker from 'expo-document-picker';
+import { RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
 import {
+  AudioLines,
   BriefcaseBusiness,
   Bell,
   Check,
@@ -12,20 +15,27 @@ import {
   LogOut,
   Mail,
   MessageCircle,
+  Mic,
   Paperclip,
+  Pause,
   Pencil,
+  Play,
   Phone,
   RefreshCw,
   Send,
   ShieldCheck,
+  Square,
   UserCheck,
   UserPlus,
   Users,
   UserX,
+  Video,
+  X,
 } from 'lucide-react-native';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -36,9 +46,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { ApiError, changeUserPassword, createUser, downloadConversationAttachment, getConversationMessages, getConversations, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getOrCreateDirectConversation, getUsers, login, markConversationRead, sendConversationMessage, updateUser, updateUserStatus, uploadConversationAttachment } from './src/api';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import CallRoom from './src/CallRoom';
+import { ApiError, changeUserPassword, createUser, downloadConversationAttachment, endCall, getCall, getCallSession, getConversationAttachmentAudioSource, getConversationMessages, getConversations, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getIncomingCall, getOrCreateDirectConversation, getUsers, login, markConversationRead, respondToCall, sendConversationMessage, startCall, updateUser, updateUserStatus, uploadConversationAttachment, uploadConversationAttachmentFromUri } from './src/api';
+import { registerNativePushToken, unregisterNativePushToken } from './src/push-notifications';
+import { connectRealtime } from './src/realtime';
 import { sessionStorage } from './src/session-storage';
-import type { ChatMessage, Company, ConversationSummary, Department, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './src/types';
+import type { Call, CallSession, CallType, ChatMessage, Company, ConversationSummary, Department, DirectoryUser, LoginInput, User, UserEditForm, UserForm } from './src/types';
 
 const SESSION_KEY = 'bizchat_admin_token';
 const DEVELOPMENT_COMPANY_SLUG = 'icon';
@@ -52,6 +66,11 @@ function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatAudioTime(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds || 0));
+  return `${Math.floor(safeSeconds / 60)}:${String(safeSeconds % 60).padStart(2, '0')}`;
 }
 
 const emptyForm: UserForm = {
@@ -99,21 +118,27 @@ export default function App() {
   }
 
   async function handleLogout() {
+    if (token) await unregisterNativePushToken(token).catch(() => {});
     await sessionStorage.removeItem(SESSION_KEY);
     setToken(null);
   }
 
+  useEffect(() => {
+    if (!token) return;
+    registerNativePushToken(token).catch(() => {});
+  }, [token]);
+
   if (checkingSession) return <LoadingScreen />;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaProvider style={styles.safeArea}>
       <StatusBar style={token ? 'light' : 'dark'} />
       {token ? (
         <AdminApp token={token} onLogout={handleLogout} />
       ) : (
         <LoginScreen onAuthenticated={handleAuthenticated} />
       )}
-    </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
@@ -259,11 +284,33 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [incomingCall, setIncomingCall] = useState<Call | null>(null);
+  const [callSession, setCallSession] = useState<CallSession | null>(null);
+  const [callBusy, setCallBusy] = useState(false);
   const notificationSnapshot = useRef<Map<string, string | null>>(new Map());
   const notifiedMessageIds = useRef<Set<string>>(new Set());
   const notificationInitialized = useRef(false);
 
   const unreadTotal = conversations.reduce((total, item) => total + Number(item.unread_count || 0), 0);
+  const sortedPeople = useMemo(() => {
+    const recentChatRank = new Map(
+      conversations
+        .filter((conversation) => conversation.last_message_at)
+        .map((conversation, index) => [conversation.participant_id, index]),
+    );
+
+    return people
+      .map((person, originalIndex) => ({ person, originalIndex }))
+      .sort((left, right) => {
+        const leftRank = recentChatRank.get(left.person.id);
+        const rightRank = recentChatRank.get(right.person.id);
+        if (leftRank !== undefined && rightRank !== undefined) return leftRank - rightRank;
+        if (leftRank !== undefined) return -1;
+        if (rightRank !== undefined) return 1;
+        return left.originalIndex - right.originalIndex;
+      })
+      .map(({ person }) => person);
+  }, [people, conversations]);
 
   async function loadNotifications() {
     try {
@@ -279,7 +326,9 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
             && selectedPerson?.id !== item.participant_id;
           if (isNewUnreadMessage) {
             const senderName = [item.participant_first_name, item.participant_last_name].filter(Boolean).join(' ');
-            const body = item.last_message_type === 'text' ? item.last_message_content || 'New message' : 'Sent an attachment';
+            const body = item.last_message_type === 'text'
+              ? item.last_message_content || 'New message'
+              : item.last_message_type === 'audio' ? 'Sent a voice message' : 'Sent an attachment';
             new Notification(senderName, { body, tag: `bizchat-${item.id}` });
             notifiedMessageIds.current.add(lastMessageId);
           }
@@ -323,8 +372,99 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
     return () => clearInterval(interval);
   }, [token, selectedPerson?.id]);
 
+  async function refreshIncomingCall() {
+    try {
+      const call = await getIncomingCall(token);
+      if (!callSession) setIncomingCall(call);
+    } catch (callError) {
+      if (callError instanceof ApiError && callError.status === 401) await onLogout();
+    }
+  }
+
+  useEffect(() => {
+    refreshIncomingCall();
+    const interval = setInterval(refreshIncomingCall, 3000);
+    const socket = connectRealtime(token);
+    socket.on('call:incoming', () => refreshIncomingCall());
+    socket.on('call:updated', (call) => {
+      if (incomingCall?.id === call.id && call.status !== 'ringing') setIncomingCall(null);
+      if (callSession?.call.id === call.id && !['ringing', 'ongoing'].includes(call.status)) setCallSession(null);
+    });
+    return () => { clearInterval(interval); socket.disconnect(); };
+  }, [token, incomingCall?.id, callSession?.call.id]);
+
+  useEffect(() => {
+    if (!callSession) return undefined;
+    const interval = setInterval(async () => {
+      try {
+        const call = await getCall(token, callSession.call.id);
+        if (!['ringing', 'ongoing'].includes(call.status)) setCallSession(null);
+      } catch { /* LiveKit handles transient media reconnects independently. */ }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [callSession?.call.id, token]);
+
+  async function beginCall(callType: CallType, conversationId: string, person: DirectoryUser) {
+    setCallBusy(true);
+    setError('');
+    let createdCallId: string | null = null;
+    try {
+      const call = await startCall(token, conversationId, person.id, callType);
+      createdCallId = call.id;
+      const displayName = [person.first_name, person.last_name].filter(Boolean).join(' ');
+      setCallSession(await getCallSession(token, call.id, displayName));
+      setSelectedPerson(null);
+    } catch (callError) {
+      if (createdCallId) await endCall(token, createdCallId, 'failed').catch(() => {});
+      setError(callError instanceof ApiError ? callError.message : 'The call could not be started.');
+    } finally {
+      setCallBusy(false);
+    }
+  }
+
+  async function answerIncomingCall() {
+    if (!incomingCall) return;
+    setCallBusy(true);
+    const callId = incomingCall.id;
+    try {
+      const call = await respondToCall(token, callId, 'accept');
+      const displayName = [incomingCall.caller_first_name, incomingCall.caller_last_name].filter(Boolean).join(' ');
+      setCallSession(await getCallSession(token, call.id, displayName));
+      setIncomingCall(null);
+      setSelectedPerson(null);
+    } catch (callError) {
+      await endCall(token, callId, 'failed').catch(() => {});
+      setIncomingCall(null);
+      setError(callError instanceof ApiError ? callError.message : 'The call could not be answered.');
+    } finally {
+      setCallBusy(false);
+    }
+  }
+
+  async function declineIncomingCall() {
+    if (!incomingCall) return;
+    setCallBusy(true);
+    try { await respondToCall(token, incomingCall.id, 'decline'); } finally {
+      setIncomingCall(null);
+      setCallBusy(false);
+    }
+  }
+
+  async function leaveCall() {
+    if (!callSession) return;
+    const callId = callSession.call.id;
+    setCallSession(null);
+    await endCall(token, callId, 'completed').catch(() => {});
+  }
+
+  if (callSession) return <CallRoom session={callSession} onEnd={leaveCall} />;
+
+  if (incomingCall) {
+    return <IncomingCallScreen call={incomingCall} busy={callBusy} onAnswer={answerIncomingCall} onDecline={declineIncomingCall} />;
+  }
+
   if (selectedPerson) {
-    return <DirectChatScreen token={token} person={selectedPerson} onBack={() => { setSelectedPerson(null); loadNotifications(); }} onLogout={onLogout} />;
+    return <DirectChatScreen token={token} person={selectedPerson} callBusy={callBusy} onStartCall={(callType, conversationId) => beginCall(callType, conversationId, selectedPerson)} onBack={() => { setSelectedPerson(null); loadNotifications(); }} onLogout={onLogout} />;
   }
 
   if (showInbox) {
@@ -345,7 +485,7 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
 
   return (
     <View style={styles.flex}>
-      <View style={styles.appHeader}>
+      <ScreenHeader>
         <View style={styles.headerIdentity}>
           <View style={styles.smallBrandMark}>
             <Text style={styles.smallBrandMarkText}>{companyInitials(company?.name)}</Text>
@@ -363,8 +503,7 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
           {onBack ? <IconButton label="Back to user administration" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark /> : null}
           <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
         </View>
-      </View>
-
+      </ScreenHeader>
       <ScrollView contentContainerStyle={styles.listPage}>
         <View style={styles.listInner}>
           <View style={styles.listTitleRow}>
@@ -397,7 +536,7 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
             </View>
           ) : (
             <View style={styles.userList}>
-              {people.map((person) => {
+              {sortedPeople.map((person) => {
                 const fullName = [person.first_name, person.last_name].filter(Boolean).join(' ');
                 return (
                   <View key={person.id} style={styles.userCard}>
@@ -432,6 +571,25 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
   );
 }
 
+function IncomingCallScreen({ call, busy, onAnswer, onDecline }: { call: Call; busy: boolean; onAnswer: () => void; onDecline: () => void }) {
+  const callerName = [call.caller_first_name, call.caller_last_name].filter(Boolean).join(' ') || 'Colleague';
+  return (
+    <View style={styles.incomingCallPage}>
+      <View style={styles.incomingCallAvatar}><Text style={styles.incomingCallAvatarText}>{companyInitials(callerName)}</Text></View>
+      <Text style={styles.incomingCallName}>{callerName}</Text>
+      <Text style={styles.incomingCallType}>Incoming {call.call_type} call</Text>
+      <View style={styles.incomingCallActions}>
+        <Pressable accessibilityLabel="Decline call" disabled={busy} onPress={onDecline} style={[styles.incomingCallButton, styles.declineCallButton]}>
+          <Phone size={26} color="#ffffff" style={{ transform: [{ rotate: '135deg' }] }} />
+        </Pressable>
+        <Pressable accessibilityLabel="Answer call" disabled={busy} onPress={onAnswer} style={[styles.incomingCallButton, styles.answerCallButton]}>
+          {busy ? <ActivityIndicator color="#ffffff" /> : call.call_type === 'video' ? <Video size={27} color="#ffffff" /> : <Phone size={27} color="#ffffff" />}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNotifications, onTestNotification, onLogout }: { conversations: ConversationSummary[]; onSelect: (person: DirectoryUser) => void; onBack: () => void; onEnableNotifications: () => Promise<void>; onTestNotification: () => Promise<boolean>; onLogout: () => Promise<void> }) {
   const [permission, setPermission] = useState(
     Platform.OS === 'web' && typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
@@ -451,13 +609,13 @@ function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNoti
 
   return (
     <View style={styles.flex}>
-      <View style={styles.appHeader}>
+      <ScreenHeader>
         <View style={styles.headerIdentity}>
           <IconButton label="Back to people" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark />
           <View><Text style={styles.headerCompany}>Notifications</Text><Text style={styles.headerSection}>Direct messages</Text></View>
         </View>
         <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
-      </View>
+      </ScreenHeader>
       <ScrollView contentContainerStyle={styles.listPage}>
         <View style={styles.listInner}>
           <View style={styles.listTitleRow}>
@@ -475,7 +633,9 @@ function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNoti
             <View style={styles.userList}>
               {conversations.map((item) => {
                 const fullName = [item.participant_first_name, item.participant_last_name].filter(Boolean).join(' ');
-                const preview = item.last_message_type === 'text' ? item.last_message_content || 'New message' : item.last_message_type ? 'Attachment' : 'Conversation started';
+                const preview = item.last_message_type === 'text'
+                  ? item.last_message_content || 'New message'
+                  : item.last_message_type === 'audio' ? 'Voice message' : item.last_message_type ? 'Attachment' : 'Conversation started';
                 const person: DirectoryUser = { id: item.participant_id, first_name: item.participant_first_name, last_name: item.participant_last_name, job_title: item.participant_job_title, profile_photo_url: item.participant_profile_photo_url, department_names: [] };
                 return (
                   <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`Open conversation with ${fullName}`} onPress={() => onSelect(person)} style={({ pressed }) => [styles.inboxCard, item.unread_count > 0 && styles.inboxCardUnread, pressed && styles.pressed]}>
@@ -496,7 +656,49 @@ function ConversationInboxScreen({ conversations, onSelect, onBack, onEnableNoti
   );
 }
 
-function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; person: DirectoryUser; onBack: () => void; onLogout: () => Promise<void> }) {
+function VoiceMessagePlayer({ token, conversationId, attachment, mine }: { token: string; conversationId: string; attachment: NonNullable<ChatMessage['attachments']>[number]; mine: boolean }) {
+  const source = useMemo(
+    () => getConversationAttachmentAudioSource(token, conversationId, attachment.id),
+    [token, conversationId, attachment.id],
+  );
+  const player = useAudioPlayer(source, { updateInterval: 250 });
+  const status = useAudioPlayerStatus(player);
+
+  async function togglePlayback() {
+    if (status.playing) {
+      player.pause();
+      return;
+    }
+    if (status.duration > 0 && status.currentTime >= status.duration - 0.2) await player.seekTo(0);
+    player.play();
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={status.playing ? 'Pause voice message' : 'Play voice message'}
+      onPress={togglePlayback}
+      style={[styles.voiceMessageCard, mine && styles.voiceMessageCardMine]}
+    >
+      <View style={[styles.voicePlayButton, mine && styles.voicePlayButtonMine]}>
+        {status.isBuffering ? <ActivityIndicator size="small" color={mine ? '#ffffff' : '#13795b'} /> : status.playing ? <Pause size={17} color={mine ? '#ffffff' : '#13795b'} fill={mine ? '#ffffff' : '#13795b'} /> : <Play size={17} color={mine ? '#ffffff' : '#13795b'} fill={mine ? '#ffffff' : '#13795b'} />}
+      </View>
+      <View style={styles.voiceMessageIdentity}>
+        <View style={styles.voiceWaveform}>
+          {[8, 15, 11, 20, 13, 24, 10, 18, 12, 21, 9, 16].map((height, index) => (
+            <View key={index} style={[styles.voiceWaveBar, { height }, mine && styles.voiceWaveBarMine]} />
+          ))}
+        </View>
+        <Text style={[styles.voiceDuration, mine && styles.voiceDurationMine]}>
+          {formatAudioTime(status.currentTime)} / {formatAudioTime(status.duration)}
+        </Text>
+      </View>
+      <AudioLines size={18} color={mine ? '#cce8dd' : '#52616c'} />
+    </Pressable>
+  );
+}
+
+function DirectChatScreen({ token, person, callBusy, onStartCall, onBack, onLogout }: { token: string; person: DirectoryUser; callBusy: boolean; onStartCall: (callType: CallType, conversationId: string) => void; onBack: () => void; onLogout: () => Promise<void> }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -504,9 +706,13 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendingVoice, setSendingVoice] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const messageListRef = useRef<ScrollView>(null);
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(audioRecorder, 250);
   const fullName = [person.first_name, person.last_name].filter(Boolean).join(' ');
 
   async function handleApiError(apiError: unknown, fallback: string) {
@@ -562,6 +768,19 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
     return () => document.removeEventListener('paste', handlePaste);
   }, [conversationId, token]);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android') return undefined;
+    const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+      setTimeout(() => messageListRef.current?.scrollToEnd({ animated: true }), 50);
+    });
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
   async function handleSend() {
     const content = draft.trim();
     if (!content || !conversationId || sending) return;
@@ -593,11 +812,72 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
     }
   }
 
+  async function startVoiceRecording() {
+    if (!conversationId || sendingVoice || uploading) return;
+    setError('');
+    try {
+      const permission = await requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        setError('Microphone permission is required to send a voice message.');
+        return;
+      }
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+    } catch {
+      setError('Voice recording could not be started.');
+    }
+  }
+
+  async function finishVoiceRecording(sendRecording: boolean) {
+    if (!recorderState.isRecording || sendingVoice) return;
+    const durationMillis = recorderState.durationMillis;
+    setSendingVoice(true);
+    setError('');
+    try {
+      await audioRecorder.stop();
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
+      if (!sendRecording) return;
+      if (durationMillis < 500) {
+        setError('Hold the recording a little longer before sending.');
+        return;
+      }
+      if (!audioRecorder.uri) throw new Error('Recording file is unavailable');
+      const extensionMatch = audioRecorder.uri.match(/\.(m4a|aac|mp3|ogg|wav|webm|3gp)(?:\?|$)/i);
+      const extension = extensionMatch?.[1]?.toLowerCase() || (Platform.OS === 'web' ? 'webm' : 'm4a');
+      const fileName = `voice-message-${Date.now()}.${extension}`;
+      if (Platform.OS === 'web') {
+        const response = await fetch(audioRecorder.uri);
+        await handleUpload(await response.blob(), fileName);
+      } else {
+        const mimeType = extension === '3gp' ? 'audio/3gpp' : extension === 'mp3' ? 'audio/mpeg' : extension === 'ogg' ? 'audio/ogg' : extension === 'wav' ? 'audio/wav' : 'audio/mp4';
+        const message = await uploadConversationAttachmentFromUri(token, conversationId!, audioRecorder.uri, fileName, mimeType);
+        setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message]);
+      }
+    } catch (voiceError) {
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false }).catch(() => {});
+      await handleApiError(voiceError, 'The voice message could not be sent.');
+    } finally {
+      setSendingVoice(false);
+    }
+  }
+
   function handlePickAttachment() {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') {
-      setError('File selection is currently available in BizChat web.');
+    if (Platform.OS !== 'web') {
+      DocumentPicker.getDocumentAsync({
+        type: ['image/*', 'application/pdf', 'text/plain', 'text/csv', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+        copyToCacheDirectory: true,
+      }).then(async (result) => {
+        if (result.canceled) return;
+        const asset = result.assets[0];
+        if (!asset?.uri) return;
+        const response = await fetch(asset.uri);
+        const blob = await response.blob();
+        await handleUpload(blob, asset.name || `attachment-${Date.now()}`);
+      }).catch(() => setError('The selected file could not be attached.'));
       return;
     }
+    if (typeof document === 'undefined') return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx';
@@ -626,21 +906,30 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
 
   return (
     <View style={styles.flex}>
-      <View style={styles.appHeader}>
+      <ScreenHeader>
         <View style={styles.headerIdentity}>
           <IconButton label="Back to people" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark />
           <View style={styles.chatHeaderAvatar}><Text style={styles.userAvatarText}>{companyInitials(fullName)}</Text></View>
           <View style={styles.flex}><Text style={styles.headerCompany}>{fullName}</Text><Text style={styles.headerSection}>{person.job_title || person.department_names?.join(', ') || 'Colleague'}</Text></View>
         </View>
-        <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
-      </View>
+        <View style={styles.headerActions}>
+          <IconButton label={`Audio call ${fullName}`} disabled={callBusy || !conversationId} onPress={() => { if (conversationId) onStartCall('audio', conversationId); }} icon={<Phone size={19} color="#ffffff" />} dark />
+          <IconButton label={`Video call ${fullName}`} disabled={callBusy || !conversationId} onPress={() => { if (conversationId) onStartCall('video', conversationId); }} icon={<Video size={20} color="#ffffff" />} dark />
+          <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
+        </View>
+      </ScreenHeader>
 
       {error ? <View style={styles.chatFeedback}><FeedbackMessage type="error" message={error} /></View> : null}
       {loading ? <View style={[styles.flex, styles.centered]}><ActivityIndicator color="#13795b" /></View> : (
-        <>
+        <View style={styles.chatContent}>
           <ScrollView
             ref={messageListRef}
-            contentContainerStyle={[styles.messageList, messages.length === 0 && styles.emptyMessageList]}
+            style={styles.messageScroller}
+            contentContainerStyle={[
+              styles.messageList,
+              messages.length === 0 && styles.emptyMessageList,
+              Platform.OS === 'android' && { paddingBottom: keyboardHeight ? keyboardHeight + 118 : 118 },
+            ]}
             onContentSizeChange={() => messageListRef.current?.scrollToEnd({ animated: true })}
           >
             {messages.length === 0 ? (
@@ -655,7 +944,9 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
                 <View key={message.id} style={[styles.messageRow, mine ? styles.messageRowMine : styles.messageRowTheirs]}>
                   <View style={[styles.messageBubble, mine ? styles.messageBubbleMine : styles.messageBubbleTheirs]}>
                     {message.content ? <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.content}</Text> : null}
-                    {message.attachments?.map((attachment) => (
+                    {message.attachments?.map((attachment) => attachment.mime_type?.startsWith('audio/') ? (
+                      <VoiceMessagePlayer key={attachment.id} token={token} conversationId={conversationId!} attachment={attachment} mine={mine} />
+                    ) : (
                       <Pressable key={attachment.id} accessibilityRole="button" accessibilityLabel={`Download ${attachment.file_name}`} onPress={() => handleDownload(attachment.id, attachment.file_name)} style={[styles.attachmentCard, mine && styles.attachmentCardMine]}>
                         {attachment.mime_type?.startsWith('image/') ? <Paperclip size={17} color={mine ? '#ffffff' : '#13795b'} /> : <FileText size={17} color={mine ? '#ffffff' : '#13795b'} />}
                         <View style={styles.attachmentIdentity}><Text numberOfLines={1} style={[styles.attachmentName, mine && styles.attachmentNameMine]}>{attachment.file_name}</Text><Text style={[styles.attachmentSize, mine && styles.attachmentSizeMine]}>{formatFileSize(Number(attachment.file_size))}</Text></View>
@@ -672,18 +963,50 @@ function DirectChatScreen({ token, person, onBack, onLogout }: { token: string; 
             {refreshing ? <ActivityIndicator size="small" color="#13795b" /> : <RefreshCw size={14} color="#13795b" />}
             <Text style={styles.refreshText}>Refresh</Text>
           </Pressable>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView
+            style={[
+              styles.chatComposerArea,
+              Platform.OS === 'android' && { bottom: keyboardHeight ? keyboardHeight : 0, paddingBottom: keyboardHeight ? 8 : 34 },
+            ]}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
             <View style={styles.composer}>
-              <Pressable accessibilityRole="button" accessibilityLabel="Attach file" disabled={uploading || !conversationId} onPress={handlePickAttachment} style={({ pressed }) => [styles.attachButton, uploading && styles.disabled, pressed && styles.pressed]}>
-                {uploading ? <ActivityIndicator size="small" color="#13795b" /> : <Paperclip size={20} color="#13795b" />}
+              <Pressable accessibilityRole="button" accessibilityLabel={recorderState.isRecording ? 'Cancel voice recording' : 'Attach file'} disabled={uploading || sendingVoice || !conversationId} onPress={recorderState.isRecording ? () => finishVoiceRecording(false) : handlePickAttachment} style={({ pressed }) => [styles.attachButton, (uploading || sendingVoice) && styles.disabled, pressed && styles.pressed]}>
+                {uploading ? <ActivityIndicator size="small" color="#13795b" /> : recorderState.isRecording ? <X size={20} color="#a32d25" /> : <Paperclip size={20} color="#13795b" />}
               </Pressable>
-              <TextInput accessibilityLabel="Message" value={draft} onChangeText={setDraft} placeholder="Write a message" placeholderTextColor="#89939d" multiline maxLength={4000} style={styles.composerInput} />
-              <Pressable accessibilityRole="button" accessibilityLabel="Send message" disabled={!draft.trim() || sending || !conversationId} onPress={handleSend} style={({ pressed }) => [styles.sendButton, (!draft.trim() || sending || !conversationId) && styles.disabled, pressed && styles.primaryButtonPressed]}>
-                {sending ? <ActivityIndicator size="small" color="#ffffff" /> : <Send size={19} color="#ffffff" />}
+              {recorderState.isRecording ? (
+                <View style={styles.recordingStatus}>
+                  <View style={styles.recordingDot} />
+                  <View style={styles.flex}><Text style={styles.recordingTitle}>Recording voice message</Text><Text style={styles.recordingHint}>Tap stop to send · {formatAudioTime(recorderState.durationMillis / 1000)}</Text></View>
+                </View>
+              ) : (
+                <TextInput
+                  accessibilityLabel="Message"
+                  value={draft}
+                  onChangeText={setDraft}
+                  onFocus={() => {
+                    if (Platform.OS === 'android' && !keyboardHeight) setKeyboardHeight(320);
+                    setTimeout(() => messageListRef.current?.scrollToEnd({ animated: true }), 80);
+                  }}
+                  placeholder="Write a message"
+                  placeholderTextColor="#89939d"
+                  multiline
+                  maxLength={4000}
+                  style={styles.composerInput}
+                />
+              )}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={recorderState.isRecording ? 'Stop and send voice message' : draft.trim() ? 'Send message' : 'Record voice message'}
+                disabled={sending || sendingVoice || uploading || !conversationId}
+                onPress={recorderState.isRecording ? () => finishVoiceRecording(true) : draft.trim() ? handleSend : startVoiceRecording}
+                style={({ pressed }) => [styles.sendButton, (sending || sendingVoice || uploading || !conversationId) && styles.disabled, recorderState.isRecording && styles.recordingStopButton, pressed && styles.primaryButtonPressed]}
+              >
+                {sending || sendingVoice ? <ActivityIndicator size="small" color="#ffffff" /> : recorderState.isRecording ? <Square size={17} color="#ffffff" fill="#ffffff" /> : draft.trim() ? <Send size={19} color="#ffffff" /> : <Mic size={20} color="#ffffff" />}
               </Pressable>
             </View>
           </KeyboardAvoidingView>
-        </>
+        </View>
       )}
     </View>
   );
@@ -755,7 +1078,7 @@ function UserListScreen({
 
   return (
     <View style={styles.flex}>
-      <View style={styles.appHeader}>
+      <ScreenHeader>
         <View style={styles.headerIdentity}>
           <View style={styles.smallBrandMark}>
             <Text style={styles.smallBrandMarkText}>{companyInitials(company?.name)}</Text>
@@ -766,8 +1089,7 @@ function UserListScreen({
           </View>
         </View>
         <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
-      </View>
-
+      </ScreenHeader>
       <ScrollView contentContainerStyle={styles.listPage}>
         <View style={styles.listInner}>
           <View style={styles.listTitleRow}>
@@ -972,7 +1294,7 @@ function EditUserScreen({
 
   return (
     <View style={styles.flex}>
-      <View style={styles.appHeader}>
+      <ScreenHeader>
         <View style={styles.headerIdentity}>
           <View style={styles.smallBrandMark}><Text style={styles.smallBrandMarkText}>{companyInitials(company?.name)}</Text></View>
           <View><Text style={styles.headerCompany}>{company?.name ?? 'BizChat'}</Text><Text style={styles.headerSection}>User administration</Text></View>
@@ -981,8 +1303,7 @@ function EditUserScreen({
           <IconButton label="Back to users" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark />
           <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
         </View>
-      </View>
-
+      </ScreenHeader>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
           <View style={styles.formInner}>
@@ -1062,10 +1383,10 @@ function ChangePasswordScreen({ token, user, onBack, onDone, onLogout }: { token
 
   return (
     <View style={styles.flex}>
-      <View style={styles.appHeader}>
+      <ScreenHeader>
         <View style={styles.headerIdentity}><View style={styles.smallBrandMark}><KeyRound size={18} color="#202830" /></View><View><Text style={styles.headerCompany}>BizChat</Text><Text style={styles.headerSection}>Password management</Text></View></View>
         <View style={styles.headerActions}><IconButton label="Back to user details" onPress={onBack} icon={<ChevronLeft size={21} color="#ffffff" />} dark /><IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark /></View>
-      </View>
+      </ScreenHeader>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled"><View style={styles.passwordForm}>
           <View style={styles.titleRow}><View style={styles.flex}><Text style={styles.screenTitle}>Change password</Text><Text style={styles.screenSubtitle}>Set a new sign-in password for {fullName}.</Text></View></View>
@@ -1178,7 +1499,7 @@ function CreateUserScreen({
 
   return (
     <View style={styles.flex}>
-      <View style={styles.appHeader}>
+      <ScreenHeader>
         <View style={styles.headerIdentity}>
           <View style={styles.smallBrandMark}>
             <Text style={styles.smallBrandMarkText}>{companyInitials(company?.name)}</Text>
@@ -1192,8 +1513,7 @@ function CreateUserScreen({
           <IconButton label="View users" onPress={onBack} icon={<Users size={20} color="#ffffff" />} dark />
           <IconButton label="Sign out" onPress={onLogout} icon={<LogOut size={20} color="#ffffff" />} dark />
         </View>
-      </View>
-
+      </ScreenHeader>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
           <View style={styles.formInner}>
@@ -1366,9 +1686,18 @@ function Segment({ label, selected, onPress }: { label: string; selected: boolea
   );
 }
 
-function IconButton({ label, icon, onPress, dark = false }: { label: string; icon: React.ReactNode; onPress: () => void | Promise<void>; dark?: boolean }) {
+function ScreenHeader({ children }: { children: React.ReactNode }) {
+  const insets = useSafeAreaInsets();
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.iconButton, dark && styles.iconButtonDark, pressed && styles.pressed]}>
+    <View style={[styles.appHeader, { paddingTop: Math.max(insets.top, 0) + 10 }]}>
+      {children}
+    </View>
+  );
+}
+
+function IconButton({ label, icon, onPress, dark = false, disabled = false }: { label: string; icon: React.ReactNode; onPress: () => void | Promise<void>; dark?: boolean; disabled?: boolean }) {
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.iconButton, dark && styles.iconButtonDark, disabled && styles.disabled, pressed && styles.pressed]}>
       {icon}
     </Pressable>
   );
@@ -1394,6 +1723,15 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#f4f6f8' },
   flex: { flex: 1 },
   centered: { alignItems: 'center', justifyContent: 'center' },
+  incomingCallPage: { flex: 1, backgroundColor: '#172129', alignItems: 'center', justifyContent: 'center', padding: 30 },
+  incomingCallAvatar: { width: 108, height: 108, borderRadius: 54, backgroundColor: '#e2f1eb', alignItems: 'center', justifyContent: 'center' },
+  incomingCallAvatarText: { color: '#13795b', fontSize: 32, fontWeight: '800' },
+  incomingCallName: { color: '#ffffff', fontSize: 28, fontWeight: '700', marginTop: 25 },
+  incomingCallType: { color: '#aeb9c2', fontSize: 15, marginTop: 8 },
+  incomingCallActions: { flexDirection: 'row', gap: 58, marginTop: 70 },
+  incomingCallButton: { width: 66, height: 66, borderRadius: 33, alignItems: 'center', justifyContent: 'center' },
+  declineCallButton: { backgroundColor: '#c83b32' },
+  answerCallButton: { backgroundColor: '#16845f' },
   loadingSpinner: { marginTop: 20 },
   loginPage: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 22, paddingVertical: 40 },
   loginInner: { width: '100%', maxWidth: 440, alignSelf: 'center' },
@@ -1487,6 +1825,8 @@ const styles = StyleSheet.create({
   chatActionText: { color: '#13795b', fontSize: 12, fontWeight: '700' },
   chatHeaderAvatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#e2f1eb', alignItems: 'center', justifyContent: 'center' },
   chatFeedback: { paddingHorizontal: 16, paddingTop: 14, backgroundColor: '#f4f6f8' },
+  chatContent: { flex: 1, position: 'relative', backgroundColor: '#eef1f3' },
+  messageScroller: { flex: 1 },
   messageList: { flexGrow: 1, paddingHorizontal: 16, paddingTop: 18, paddingBottom: 12, backgroundColor: '#eef1f3' },
   emptyMessageList: { justifyContent: 'center' },
   emptyChat: { alignItems: 'center', alignSelf: 'center', maxWidth: 300, padding: 24 },
@@ -1507,11 +1847,27 @@ const styles = StyleSheet.create({
   attachmentNameMine: { color: '#ffffff' },
   attachmentSize: { color: '#71808a', fontSize: 9, marginTop: 3 },
   attachmentSizeMine: { color: '#cce8dd' },
+  voiceMessageCard: { minWidth: 235, maxWidth: 310, borderWidth: 1, borderColor: '#cfe0d9', borderRadius: 12, backgroundColor: '#f4faf7', paddingHorizontal: 10, paddingVertical: 9, marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  voiceMessageCardMine: { borderColor: '#62a991', backgroundColor: '#0f6b50' },
+  voicePlayButton: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, borderColor: '#9bcbb7', backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' },
+  voicePlayButtonMine: { borderColor: '#8dc8b4', backgroundColor: '#13795b' },
+  voiceMessageIdentity: { flex: 1, minWidth: 0 },
+  voiceWaveform: { height: 25, flexDirection: 'row', alignItems: 'center', gap: 3 },
+  voiceWaveBar: { width: 3, borderRadius: 2, backgroundColor: '#5ba98d' },
+  voiceWaveBarMine: { backgroundColor: '#bde5d6' },
+  voiceDuration: { color: '#61717c', fontSize: 9, marginTop: 2 },
+  voiceDurationMine: { color: '#cce8dd' },
   chatRefresh: { minHeight: 32, paddingHorizontal: 16, backgroundColor: '#eef1f3', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 },
+  chatComposerArea: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#ffffff', paddingBottom: Platform.OS === 'android' ? 34 : 0 },
   composer: { minHeight: 66, borderTopWidth: 1, borderTopColor: '#d5dce1', backgroundColor: '#ffffff', paddingHorizontal: 12, paddingVertical: 9, flexDirection: 'row', alignItems: 'flex-end', gap: 9 },
   composerInput: { flex: 1, maxHeight: 110, minHeight: 46, borderWidth: 1, borderColor: '#cbd2d8', borderRadius: 22, color: '#182129', fontSize: 15, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10 },
+  recordingStatus: { flex: 1, minHeight: 46, borderWidth: 1, borderColor: '#efc4c0', borderRadius: 22, backgroundColor: '#fff5f4', paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#c73c33' },
+  recordingTitle: { color: '#7f2620', fontSize: 13, fontWeight: '700' },
+  recordingHint: { color: '#9c5b56', fontSize: 9, marginTop: 2 },
   attachButton: { width: 42, height: 46, borderRadius: 21, borderWidth: 1, borderColor: '#b8ddcd', backgroundColor: '#eef8f4', alignItems: 'center', justifyContent: 'center' },
   sendButton: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#13795b', alignItems: 'center', justifyContent: 'center' },
+  recordingStopButton: { backgroundColor: '#b83229' },
   formPage: { paddingHorizontal: 18, paddingTop: 24, paddingBottom: 44 },
   formInner: { width: '100%', maxWidth: 620, alignSelf: 'center' },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 24 },

@@ -29,7 +29,7 @@ CREATE TABLE messages (
   company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   sender_id UUID NOT NULL REFERENCES users(id),
-  message_type TEXT NOT NULL DEFAULT 'text' CHECK (message_type IN ('text', 'image', 'file')),
+  message_type TEXT NOT NULL DEFAULT 'text' CHECK (message_type IN ('text', 'image', 'file', 'audio')),
   reply_to_message_id UUID REFERENCES messages(id),
   content TEXT,
   edited_at TIMESTAMPTZ,

@@ -6,8 +6,10 @@ import { pool } from './config/database.js';
 import { errorHandler, notFoundHandler } from './middleware/errors.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createCompaniesRouter } from './routes/companies.js';
+import { createCallsRouter } from './routes/calls.js';
 import { createConversationsRouter } from './routes/conversations.js';
 import { createDepartmentsRouter } from './routes/departments.js';
+import { createDevicesRouter } from './routes/devices.js';
 import { createHealthRouter } from './routes/health.js';
 import { createSetupRouter } from './routes/setup.js';
 import { createUsersRouter } from './routes/users.js';
@@ -26,9 +28,11 @@ export function createApp(db = pool) {
   app.use('/api/health', createHealthRouter(db));
   app.use('/api/setup', createSetupRouter(db));
   app.use('/api/auth', createAuthRouter(db));
+  app.use('/api/calls', createCallsRouter(db));
   app.use('/api/companies', createCompaniesRouter(db));
   app.use('/api/conversations', createConversationsRouter(db));
   app.use('/api/departments', createDepartmentsRouter(db));
+  app.use('/api/devices', createDevicesRouter(db));
   app.use('/api/users', createUsersRouter(db));
 
   app.use(notFoundHandler);

@@ -11,6 +11,7 @@ process.env.CHAT_UPLOAD_DIR ??= '/tmp/bizchat-test-uploads';
 
 const { createApp } = await import('../src/app.js');
 const { env } = await import('../src/config/env.js');
+const { createRoomToken } = await import('../src/lib/livekit.js');
 const { normalizeMobileNumber } = await import('../src/lib/phone-number.js');
 
 function fakeDb(query = async () => ({ rows: [] })) {
@@ -117,6 +118,50 @@ test('conversation recipients can upload a private attachment', async () => {
   }
 });
 
+test('conversation recipients can send a private voice message', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const conversationId = '27a87832-8c4f-4971-843a-a92de1149263';
+  const messageId = '004c8766-31f7-42bd-8c4a-5c7542019f0b';
+  const attachmentId = '55ac614f-a519-4755-93d1-5d5e638c1d38';
+  const token = jwt.sign({ sub: userId, companyId, role: 'user' }, env.JWT_SECRET);
+  let messageValues;
+  let attachmentValues;
+  const client = {
+    async query(sql, values) {
+      if (sql.includes('INSERT INTO messages')) {
+        messageValues = values;
+        return { rows: [{ id: messageId, conversation_id: conversationId, sender_id: userId, message_type: 'audio', content: null, edited_at: null, created_at: new Date().toISOString() }] };
+      }
+      if (sql.includes('INSERT INTO attachments')) {
+        attachmentValues = values;
+        return { rows: [{ id: attachmentId, file_name: 'voice-message.m4a', mime_type: 'audio/mp4', file_size: 5 }] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const db = {
+    async query() { return { rows: [{ id: conversationId }] }; },
+    async connect() { return client; },
+  };
+
+  try {
+    const response = await request(createApp(db))
+      .post(`/api/conversations/${conversationId}/attachments`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('voice'), { filename: 'voice-message.m4a', contentType: 'audio/mp4' });
+
+    assert.equal(response.status, 201);
+    assert.equal(response.body.message.message_type, 'audio');
+    assert.equal(response.body.message.attachments[0].mime_type, 'audio/mp4');
+    assert.equal(messageValues[3], 'audio');
+    assert.equal(attachmentValues[4], 'audio');
+  } finally {
+    await rm(process.env.CHAT_UPLOAD_DIR, { recursive: true, force: true });
+  }
+});
+
 test('mark-read updates only the signed-in recipient conversation state', async () => {
   const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
   const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
@@ -138,6 +183,96 @@ test('mark-read updates only the signed-in recipient conversation state', async 
   assert.equal(response.status, 200);
   assert.equal(response.body.readCount, 2);
   assert.deepEqual(updateValues, [conversationId, companyId, userId]);
+});
+
+test('authenticated users can register a push token for their device', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const token = jwt.sign({ sub: userId, companyId, role: 'user' }, env.JWT_SECRET);
+  let insertValues;
+  const db = fakeDb(async (sql, values) => {
+    if (sql.startsWith('UPDATE user_devices')) return { rows: [] };
+    insertValues = values;
+    return { rows: [{ id: 'device-1', device_type: 'android', device_name: 'Pixel', status: 'active', last_active_at: new Date().toISOString() }] };
+  });
+
+  const response = await request(createApp(db))
+    .post('/api/devices/push-token')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ pushToken: 'fcm-token-with-enough-characters', deviceType: 'android', deviceName: 'Pixel' });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.device.device_type, 'android');
+  assert.deepEqual(insertValues, [companyId, userId, 'android', 'Pixel', 'fcm-token-with-enough-characters']);
+});
+
+test('authenticated users can revoke their own device push token', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const pushToken = 'fcm-token-with-enough-characters';
+  const token = jwt.sign({ sub: userId, companyId, role: 'user' }, env.JWT_SECRET);
+  let updateValues;
+  const db = fakeDb(async (_sql, values) => {
+    updateValues = values;
+    return { rows: [{ id: 'device-1' }] };
+  });
+
+  const response = await request(createApp(db))
+    .delete('/api/devices/push-token')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ pushToken });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.revoked, true);
+  assert.deepEqual(updateValues, [companyId, userId, pushToken]);
+});
+
+test('users cannot start a call outside their direct conversation', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const participantId = '93fced7f-83eb-4bb9-90c6-1095f0761fb8';
+  const conversationId = '27a87832-8c4f-4971-843a-a92de1149263';
+  const token = jwt.sign({ sub: userId, companyId, role: 'company_admin' }, env.JWT_SECRET);
+  let membershipValues;
+  const db = fakeDb(async (_sql, values) => {
+    membershipValues = values;
+    return { rows: [] };
+  });
+
+  const response = await request(createApp(db))
+    .post('/api/calls')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ conversationId, participantId, callType: 'video' });
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body.error.code, 'not_found');
+  assert.deepEqual(membershipValues, [conversationId, companyId, userId, participantId]);
+});
+
+test('LiveKit tokens are short-lived and scoped to one room', async () => {
+  const previous = {
+    url: env.LIVEKIT_URL,
+    key: env.LIVEKIT_API_KEY,
+    secret: env.LIVEKIT_API_SECRET,
+  };
+  env.LIVEKIT_URL = 'wss://rtc.example.com';
+  env.LIVEKIT_API_KEY = 'test-key';
+  env.LIVEKIT_API_SECRET = 'test-secret-with-enough-entropy';
+  try {
+    const result = await createRoomToken({ roomName: 'company-call-room', userId: 'user-id', displayName: 'Test User' });
+    const claims = jwt.verify(result.token, env.LIVEKIT_API_SECRET, { algorithms: ['HS256'] });
+    assert.equal(result.url, env.LIVEKIT_URL);
+    assert.equal(claims.iss, env.LIVEKIT_API_KEY);
+    assert.equal(claims.sub, 'user-id');
+    assert.equal(claims.video.room, 'company-call-room');
+    assert.equal(claims.video.roomJoin, true);
+    assert.equal(claims.video.canPublish, true);
+    assert.ok(claims.exp - claims.nbf <= 15 * 60);
+  } finally {
+    env.LIVEKIT_URL = previous.url;
+    env.LIVEKIT_API_KEY = previous.key;
+    env.LIVEKIT_API_SECRET = previous.secret;
+  }
 });
 
 test('unknown API routes return a structured 404', async () => {

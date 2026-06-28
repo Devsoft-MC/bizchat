@@ -170,7 +170,11 @@ Facility and smart office controls should be added only after the core communica
 - Direct conversations and messages enforce authenticated company membership on the backend; the production route is deployed under PM2
 - Direct-chat privacy is recipient-only: only the two active conversation members can read or send messages, and Company Admin/Super Admin roles receive no chat-viewing bypass
 - BizChat web Direct Chat supports private image/document attachments through the paperclip button and direct clipboard image/file paste; files are limited to 10 MB and downloads require conversation membership
+- Direct Chat supports private voice messages with microphone recording, cancel or stop-and-send controls, authenticated in-chat playback, and voice-specific inbox/push previews
 - Web message notifications are implemented: recipient-specific unread counts, a notification inbox, read-state updates when chats open, and optional browser alerts while BizChat is running
+- Android FCM plumbing is implemented locally: native token registration, authenticated device storage, message-triggered multicast sends, logout revocation, and automatic retirement of invalid tokens
+- A fresh Firebase-enabled Android release APK was built successfully; the private Firebase Admin service account and authenticated device-token route are deployed on the VPS, with a two-device background-delivery test still pending
+- The iOS Firebase Messaging client is integrated locally with FCM token registration and refresh handling; signed-device delivery still needs Apple signing, an APNs key in Firebase, and physical-device verification
 - The production `/api/users/directory` endpoint returns only active colleagues from the signed-in user's company, excludes the requester, and does not expose admin-only contact/status controls
 - Production verification as Mrudul's real `user` role returned HTTP 200 with both active Manoj colleagues; the admin visual regression also passed without browser errors
 - Expo web production is deployed on Vercel at `https://bizchat-wine.vercel.app` and visually verified with the production API configuration
@@ -199,15 +203,51 @@ npm start
 
 Web preview URL: `http://localhost:8081`
 
+## iOS Version Progress
+
+Completed locally on 28 June 2026:
+
+- Firebase iOS app configuration is connected with bundle ID `com.devsoftmc.bizchat` and `GoogleService-Info.plist`
+- React Native Firebase App and Messaging clients are installed and linked through CocoaPods
+- iOS now requests notification permission, obtains an FCM registration token, registers it with `/api/devices/push-token`, re-registers refreshed tokens, and revokes the token on logout
+- Push Notifications entitlement, remote-notification background mode, foreground banner/sound/badge presentation, and static Firebase framework linking are configured
+- Firebase-enabled iOS simulator compilation succeeds in Xcode 26.5
+- Mobile TypeScript checking, Expo web export, Expo Doctor 21/21, and backend tests 15/15 pass
+
+Deferred Apple account and physical-device work:
+
+- Enroll in the paid Apple Developer Program; the currently configured free Personal Team does not support the Push Notifications capability
+- After enrollment, add the paid development team to Xcode and create the signing certificate/provisioning profile for `com.devsoftmc.bizchat`
+- Create an APNs authentication key in the Apple Developer account and upload it to Firebase Cloud Messaging with its Key ID and Apple Team ID
+- Connect, trust, and enable Developer Mode on a physical iPhone
+- Make a signed iPhone build, sign in to BizChat, confirm the iOS FCM token is stored in `user_devices`, and verify foreground, background, and terminated-app message delivery
+
 ## Tomorrow Start Point
-- Add Socket.IO realtime delivery so inbox and browser alerts no longer depend on five-second polling
-- Add Firebase Cloud Messaging for background Android/iOS push notifications
-- Add native mobile document selection for iOS and Android
+- Install the latest APK on two physical Android devices and verify token registration plus background notification delivery
+- Resume the deferred iOS Apple signing/APNs/physical-device checklist above after paid Apple Developer enrollment is active
 - Add backend integration tests using a disposable PostgreSQL test database
 - Continue with department update APIs after the mobile flow is verified
 
+## Audio and Video Calling Progress
+
+Completed locally on 28 June 2026:
+
+- One-to-one audio and video call buttons are available in Direct Chat, with incoming-call answer/decline screens and in-call microphone, camera, and hang-up controls
+- Authenticated call creation, response, session-token, history, and end APIs enforce company and direct-conversation membership
+- LiveKit room tokens are short-lived and restricted to one call room; the browser and native Android/iOS clients use the same call flow
+- Socket.IO sends incoming and updated call state in realtime, with API polling retained as a recovery fallback
+- Incoming calls also trigger FCM alerts for registered devices
+- Database migration `database/migrations/003_livekit_calls.sql`, backend tests, mobile type checking, web export, iOS simulator compilation, Android debug APK build, and native LiveKit/WebRTC linking are complete
+
+Remaining deployment and device work:
+
+- Apply migration `003_livekit_calls.sql` to the target database
+- Deploy or subscribe to a LiveKit server and configure `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` only in the private backend environment
+- Proxy the configured Socket.IO path to the backend and expose the LiveKit WebSocket/media endpoints with TLS
+- Build and test with two signed-in physical devices on separate networks, including microphone/camera permissions, reconnect, decline, and hang-up behavior
+- Native background incoming-call UI (iOS CallKit/PushKit and the Android equivalent) remains deferred as agreed; the current call screen works while BizChat is active and FCM provides the background alert
+
 ## Notes on Future Growth
-- Voice and video call support should be planned now using reserved schema tables
 - Group naming and membership rules should be enforced in the application logic
 - External/vendor collaboration is a later-stage expansion, not the immediate MVP focus
 - Facility control features such as switch on/off controls and IP camera views should be treated as a separate future module with strict permissions and audit logging
