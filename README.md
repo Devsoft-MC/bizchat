@@ -230,21 +230,22 @@ Deferred Apple account and physical-device work:
 
 ## Audio and Video Calling Progress
 
-Completed locally on 28 June 2026:
+Completed and deployed on 28 June 2026:
 
 - One-to-one audio and video call buttons are available in Direct Chat, with incoming-call answer/decline screens and in-call microphone, camera, and hang-up controls
 - Authenticated call creation, response, session-token, history, and end APIs enforce company and direct-conversation membership
 - LiveKit room tokens are short-lived and restricted to one call room; the browser and native Android/iOS clients use the same call flow
 - Socket.IO sends incoming and updated call state in realtime, with API polling retained as a recovery fallback
 - Incoming calls also trigger FCM alerts for registered devices
-- Database migration `database/migrations/003_livekit_calls.sql`, backend tests, mobile type checking, web export, iOS simulator compilation, Android debug APK build, and native LiveKit/WebRTC linking are complete
+- Database migration `database/migrations/003_livekit_calls.sql`, backend tests, mobile type checking, web export, iOS simulator compilation, Android standalone APK build, and native LiveKit/WebRTC linking are complete
+- Production `bizchat-api` includes the authenticated call routes, and both voice-message migration `002` and call migration `003` are applied to `bizchatdb`
+- LiveKit Server `1.13.2` runs under systemd on the Hostinger VPS; Nginx exposes its TLS WebSocket endpoint at `https://api.sahiproducts.com/rtc`, with TCP `7881` and UDP `7882` available for media
+- Production Socket.IO is proxied at `/bizchat/socket.io`, the updated web app is deployed to `https://bizchat-wine.vercel.app`, and Android standalone build `1.0.1` packages the production realtime configuration
 
-Remaining deployment and device work:
+Remaining device work:
 
-- Apply migration `003_livekit_calls.sql` to the target database
-- Deploy or subscribe to a LiveKit server and configure `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` only in the private backend environment
-- Proxy the configured Socket.IO path to the backend and expose the LiveKit WebSocket/media endpoints with TLS
 - Build and test with two signed-in physical devices on separate networks, including microphone/camera permissions, reconnect, decline, and hang-up behavior
+- If an office Wi-Fi filter blocks `api.sahiproducts.com`, perform the first media test on mobile data; the current development network classifies that direct host incorrectly even though the same API works through the Vercel proxy
 - Native background incoming-call UI (iOS CallKit/PushKit and the Android equivalent) remains deferred as agreed; the current call screen works while BizChat is active and FCM provides the background alert
 
 ## Notes on Future Growth
