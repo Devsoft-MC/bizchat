@@ -10,7 +10,6 @@ function LoopingCallTone({ source, volume }: { source: number; volume: number })
     player.play();
     return () => {
       player.pause();
-      player.seekTo(0).catch(() => {});
     };
   }, [player, volume]);
 

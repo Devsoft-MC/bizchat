@@ -434,12 +434,14 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
   async function answerIncomingCall() {
     if (!incomingCall) return;
     setCallBusy(true);
-    const callId = incomingCall.id;
+    const answeredCall = incomingCall;
+    const callId = answeredCall.id;
+    setIncomingCall(null);
     try {
+      await new Promise((resolve) => setTimeout(resolve, 350));
       const call = await respondToCall(token, callId, 'accept');
-      const displayName = [incomingCall.caller_first_name, incomingCall.caller_last_name].filter(Boolean).join(' ');
+      const displayName = [answeredCall.caller_first_name, answeredCall.caller_last_name].filter(Boolean).join(' ');
       setCallSession(await getCallSession(token, call.id, displayName));
-      setIncomingCall(null);
       setSelectedPerson(null);
     } catch (callError) {
       await endCall(token, callId, 'failed').catch(() => {});
@@ -453,8 +455,12 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
   async function declineIncomingCall() {
     if (!incomingCall) return;
     setCallBusy(true);
-    try { await respondToCall(token, incomingCall.id, 'decline'); } finally {
-      setIncomingCall(null);
+    const callId = incomingCall.id;
+    setIncomingCall(null);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await respondToCall(token, callId, 'decline');
+    } finally {
       setCallBusy(false);
     }
   }

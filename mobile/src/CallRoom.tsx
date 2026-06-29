@@ -72,10 +72,29 @@ function CallStage({ session, onEnd }: CallRoomProps) {
 }
 
 export default function CallRoom(props: CallRoomProps) {
+  const [audioReady, setAudioReady] = useState(false);
+
   useEffect(() => {
-    AudioSession.startAudioSession();
-    return () => { AudioSession.stopAudioSession(); };
+    let active = true;
+    AudioSession.startAudioSession()
+      .then(() => { if (active) setAudioReady(true); })
+      .catch(props.onEnd);
+    return () => {
+      active = false;
+      AudioSession.stopAudioSession().catch(() => {});
+    };
   }, []);
+
+  if (!audioReady) {
+    return (
+      <View style={styles.page}>
+        <View style={styles.waiting}>
+          <ActivityIndicator color="#ffffff" />
+          <Text style={styles.waitingTitle}>Preparing call…</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <LiveKitRoom
