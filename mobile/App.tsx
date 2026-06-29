@@ -48,7 +48,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import CallRoom from './src/CallRoom';
-import { IncomingRingtone } from './src/CallTone';
+import { IncomingRingtone, stopCallToneAudio } from './src/CallTone';
 import { ApiError, changeUserPassword, createUser, downloadConversationAttachment, endCall, getCall, getCallSession, getConversationAttachmentAudioSource, getConversationMessages, getConversations, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getIncomingCall, getOrCreateDirectConversation, getUsers, login, markConversationRead, respondToCall, sendConversationMessage, startCall, updateUser, updateUserStatus, uploadConversationAttachment, uploadConversationAttachmentFromUri } from './src/api';
 import { registerNativePushToken, unregisterNativePushToken } from './src/push-notifications';
 import { connectRealtime } from './src/realtime';
@@ -438,7 +438,8 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
     const callId = answeredCall.id;
     setIncomingCall(null);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      await stopCallToneAudio();
+      await new Promise((resolve) => setTimeout(resolve, 250));
       const call = await respondToCall(token, callId, 'accept');
       const displayName = [answeredCall.caller_first_name, answeredCall.caller_last_name].filter(Boolean).join(' ');
       setCallSession(await getCallSession(token, call.id, displayName));
@@ -458,7 +459,7 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
     const callId = incomingCall.id;
     setIncomingCall(null);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await stopCallToneAudio();
       await respondToCall(token, callId, 'decline');
     } finally {
       setCallBusy(false);

@@ -1,15 +1,24 @@
 import { useEffect } from 'react';
-import { useAudioPlayer } from 'expo-audio';
+import { setIsAudioActiveAsync, useAudioPlayer } from 'expo-audio';
+
+export async function stopCallToneAudio() {
+  await setIsAudioActiveAsync(false);
+}
 
 function LoopingCallTone({ source, volume }: { source: number; volume: number }) {
   const player = useAudioPlayer(source, { downloadFirst: true });
 
   useEffect(() => {
+    let active = true;
     player.loop = true;
     player.volume = volume;
-    player.play();
+    setIsAudioActiveAsync(true)
+      .then(() => { if (active) player.play(); })
+      .catch(() => {});
     return () => {
+      active = false;
       player.pause();
+      stopCallToneAudio().catch(() => {});
     };
   }, [player, volume]);
 
