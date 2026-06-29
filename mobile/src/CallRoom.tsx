@@ -7,10 +7,12 @@ import {
   LiveKitRoom,
   registerGlobals,
   useLocalParticipant,
+  useRemoteParticipants,
   useTracks,
   VideoTrack,
 } from '@livekit/react-native';
 import { Track } from 'livekit-client';
+import { OutgoingRingback } from './CallTone';
 import type { CallRoomProps } from './CallRoom.types';
 
 registerGlobals();
@@ -18,7 +20,9 @@ registerGlobals();
 function CallStage({ session, onEnd }: CallRoomProps) {
   const tracks = useTracks([Track.Source.Camera]);
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } = useLocalParticipant();
+  const remoteParticipants = useRemoteParticipants();
   const [changingMedia, setChangingMedia] = useState(false);
+  const connected = remoteParticipants.length > 0;
   const remoteTrack = tracks.find((track) => isTrackReference(track) && track.participant.identity !== localParticipant.identity);
   const localTrack = tracks.find((track) => isTrackReference(track) && track.participant.identity === localParticipant.identity);
 
@@ -34,17 +38,21 @@ function CallStage({ session, onEnd }: CallRoomProps) {
 
   return (
     <View style={styles.page}>
+      {!connected && session.call.status === 'ringing' ? <OutgoingRingback /> : null}
       <View style={styles.videoStage}>
         {remoteTrack && isTrackReference(remoteTrack) ? (
           <VideoTrack trackRef={remoteTrack} style={styles.remoteVideo} />
         ) : (
           <View style={styles.waiting}>
             <ActivityIndicator color="#ffffff" />
-            <Text style={styles.waitingTitle}>{session.call.status === 'ringing' ? 'Ringing…' : 'Connecting…'}</Text>
+            <Text style={styles.waitingTitle}>{connected ? 'Connected' : session.call.status === 'ringing' ? 'Ringing…' : 'Connecting…'}</Text>
             <Text style={styles.waitingText}>{session.displayName}</Text>
           </View>
         )}
         {localTrack && isTrackReference(localTrack) ? <VideoTrack trackRef={localTrack} style={styles.localVideo} mirror /> : null}
+        <View style={[styles.callStatus, connected && styles.callStatusConnected]}>
+          <Text style={styles.callStatusText}>{connected ? 'Connected' : session.call.status === 'ringing' ? 'Ringing…' : 'Connecting…'}</Text>
+        </View>
       </View>
       <View style={styles.controls}>
         <Pressable accessibilityLabel={isMicrophoneEnabled ? 'Mute microphone' : 'Unmute microphone'} disabled={changingMedia} onPress={toggleMicrophone} style={styles.controlButton}>
@@ -92,6 +100,9 @@ const styles = StyleSheet.create({
   waiting: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   waitingTitle: { color: '#ffffff', fontSize: 24, fontWeight: '700', marginTop: 18 },
   waitingText: { color: '#aeb9c2', fontSize: 15, marginTop: 7 },
+  callStatus: { position: 'absolute', top: 18, alignSelf: 'center', backgroundColor: '#3b4852', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 7 },
+  callStatusConnected: { backgroundColor: '#16845f' },
+  callStatusText: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
   controls: { minHeight: 104, backgroundColor: '#1a2229', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 18, paddingHorizontal: 20, paddingBottom: 14 },
   controlButton: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#3b4852', alignItems: 'center', justifyContent: 'center' },
   endButton: { backgroundColor: '#c83b32' },

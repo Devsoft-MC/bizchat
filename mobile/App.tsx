@@ -48,6 +48,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import CallRoom from './src/CallRoom';
+import { IncomingRingtone } from './src/CallTone';
 import { ApiError, changeUserPassword, createUser, downloadConversationAttachment, endCall, getCall, getCallSession, getConversationAttachmentAudioSource, getConversationMessages, getConversations, getCurrentCompany, getCurrentUser, getDepartments, getDirectoryUsers, getIncomingCall, getOrCreateDirectConversation, getUsers, login, markConversationRead, respondToCall, sendConversationMessage, startCall, updateUser, updateUserStatus, uploadConversationAttachment, uploadConversationAttachmentFromUri } from './src/api';
 import { registerNativePushToken, unregisterNativePushToken } from './src/push-notifications';
 import { connectRealtime } from './src/realtime';
@@ -388,7 +389,11 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
     socket.on('call:incoming', () => refreshIncomingCall());
     socket.on('call:updated', (call) => {
       if (incomingCall?.id === call.id && call.status !== 'ringing') setIncomingCall(null);
-      if (callSession?.call.id === call.id && !['ringing', 'ongoing'].includes(call.status)) setCallSession(null);
+      setCallSession((current) => {
+        if (!current || current.call.id !== call.id) return current;
+        if (!['ringing', 'ongoing'].includes(call.status)) return null;
+        return { ...current, call: { ...current.call, ...call } };
+      });
     });
     return () => { clearInterval(interval); socket.disconnect(); };
   }, [token, incomingCall?.id, callSession?.call.id]);
@@ -398,7 +403,11 @@ function PeopleDirectoryScreen({ token, onBack, onLogout }: { token: string; onB
     const interval = setInterval(async () => {
       try {
         const call = await getCall(token, callSession.call.id);
-        if (!['ringing', 'ongoing'].includes(call.status)) setCallSession(null);
+        setCallSession((current) => {
+          if (!current || current.call.id !== call.id) return current;
+          if (!['ringing', 'ongoing'].includes(call.status)) return null;
+          return { ...current, call: { ...current.call, ...call } };
+        });
       } catch { /* LiveKit handles transient media reconnects independently. */ }
     }, 2500);
     return () => clearInterval(interval);
@@ -575,6 +584,7 @@ function IncomingCallScreen({ call, busy, onAnswer, onDecline }: { call: Call; b
   const callerName = [call.caller_first_name, call.caller_last_name].filter(Boolean).join(' ') || 'Colleague';
   return (
     <View style={styles.incomingCallPage}>
+      <IncomingRingtone />
       <View style={styles.incomingCallAvatar}><Text style={styles.incomingCallAvatarText}>{companyInitials(callerName)}</Text></View>
       <Text style={styles.incomingCallName}>{callerName}</Text>
       <Text style={styles.incomingCallType}>Incoming {call.call_type} call</Text>
