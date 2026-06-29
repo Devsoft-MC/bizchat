@@ -249,6 +249,41 @@ test('users cannot start a call outside their direct conversation', async () => 
   assert.deepEqual(membershipValues, [conversationId, companyId, userId, participantId]);
 });
 
+test('users can start a call without an ambiguous PostgreSQL call-type parameter', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const participantId = '93fced7f-83eb-4bb9-90c6-1095f0761fb8';
+  const conversationId = '27a87832-8c4f-4971-843a-a92de1149263';
+  const callId = 'f60b14a4-a95f-46bb-95cf-8ec0f385ea9b';
+  const token = jwt.sign({ sub: userId, companyId, role: 'user' }, env.JWT_SECRET);
+  let eventQuery;
+  const client = {
+    async query(sql) {
+      if (sql.includes('SELECT c.id, target.first_name')) return { rows: [{ id: conversationId }] };
+      if (sql.includes('SELECT c.id\n         FROM calls')) return { rows: [] };
+      if (sql.includes('INSERT INTO calls')) {
+        return { rows: [{ id: callId, company_id: companyId, conversation_id: conversationId, created_by: userId, call_type: 'audio', status: 'ringing' }] };
+      }
+      if (sql.includes('INSERT INTO call_events')) eventQuery = sql;
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const db = {
+    async query() { return { rows: [] }; },
+    async connect() { return client; },
+  };
+
+  const response = await request(createApp(db))
+    .post('/api/calls')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ conversationId, participantId, callType: 'audio' });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.call.id, callId);
+  assert.match(eventQuery, /\$3::text/);
+});
+
 test('LiveKit tokens are short-lived and scoped to one room', async () => {
   const previous = {
     url: env.LIVEKIT_URL,

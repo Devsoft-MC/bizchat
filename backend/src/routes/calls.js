@@ -146,7 +146,7 @@ export function createCallsRouter(db) {
       );
       await client.query(
         `INSERT INTO call_events (call_id, user_id, event_type, metadata)
-         VALUES ($1, $2, 'created', jsonb_build_object('call_type', $3)),
+         VALUES ($1, $2, 'created', jsonb_build_object('call_type', $3::text)),
                 ($1, $4, 'ringing', '{}'::jsonb)`,
         [nextCall.id, request.auth.sub, callType, participantId]
       );
