@@ -229,7 +229,7 @@ export function createCallsRouter(db) {
   router.post('/:callId/end', validate(callIdSchema, 'params'), validate(endSchema), asyncHandler(async (request, response) => {
     const result = await db.query(
       `UPDATE calls c
-       SET status = CASE WHEN status = 'ringing' THEN 'cancelled' ELSE 'ended' END,
+       SET status = CASE WHEN c.status = 'ringing' THEN 'cancelled' ELSE 'ended' END,
            ended_at = now(), ended_by = $3, end_reason = $4, updated_at = now()
        FROM call_participants cp
        WHERE c.id = $1 AND c.company_id = $2 AND cp.call_id = c.id AND cp.user_id = $3
@@ -240,7 +240,7 @@ export function createCallsRouter(db) {
     if (!result.rows[0]) throw notFound('Active call not found');
     await db.query(
       `INSERT INTO call_events (call_id, user_id, event_type, metadata)
-       VALUES ($1, $2, 'ended', jsonb_build_object('reason', $3))`,
+       VALUES ($1, $2, 'ended', jsonb_build_object('reason', $3::text))`,
       [request.params.callId, request.auth.sub, request.body.reason]
     );
     const call = await getCallForUser(db, request.params.callId, request.auth.companyId, request.auth.sub);

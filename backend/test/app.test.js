@@ -284,6 +284,36 @@ test('users can start a call without an ambiguous PostgreSQL call-type parameter
   assert.match(eventQuery, /\$3::text/);
 });
 
+test('users can end a call without ambiguous PostgreSQL status or reason values', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const callId = 'f60b14a4-a95f-46bb-95cf-8ec0f385ea9b';
+  const token = jwt.sign({ sub: userId, companyId, role: 'user' }, env.JWT_SECRET);
+  let updateQuery;
+  let eventQuery;
+  const db = fakeDb(async (sql) => {
+    if (sql.includes('UPDATE calls c')) {
+      updateQuery = sql;
+      return { rows: [{ id: callId }] };
+    }
+    if (sql.includes('INSERT INTO call_events')) {
+      eventQuery = sql;
+      return { rows: [] };
+    }
+    return { rows: [{ id: callId, status: 'ended', participant_ids: [userId] }] };
+  });
+
+  const response = await request(createApp(db))
+    .post(`/api/calls/${callId}/end`)
+    .set('Authorization', `Bearer ${token}`)
+    .send({ reason: 'completed' });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.call.status, 'ended');
+  assert.match(updateQuery, /CASE WHEN c\.status/);
+  assert.match(eventQuery, /\$3::text/);
+});
+
 test('LiveKit tokens are short-lived and scoped to one room', async () => {
   const previous = {
     url: env.LIVEKIT_URL,
