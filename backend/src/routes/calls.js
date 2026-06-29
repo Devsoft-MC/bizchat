@@ -105,7 +105,7 @@ export function createCallsRouter(db) {
     const { conversationId, participantId, callType } = request.body;
     if (participantId === request.auth.sub) throw new AppError(400, 'invalid_participant', 'You cannot call yourself');
 
-    const call = await withTransaction(db, async (client) => {
+    const { call, replacedCallId } = await withTransaction(db, async (client) => {
       const membership = await client.query(
         `SELECT c.id, target.first_name, target.last_name
          FROM conversations c
@@ -126,10 +126,25 @@ export function createCallsRouter(db) {
          JOIN call_participants caller_cp ON caller_cp.call_id = c.id AND caller_cp.user_id = $2
          JOIN call_participants target_cp ON target_cp.call_id = c.id AND target_cp.user_id = $3
          WHERE c.company_id = $1 AND c.status IN ('ringing', 'ongoing')
-         LIMIT 1`,
+         LIMIT 1
+         FOR UPDATE OF c`,
         [request.auth.companyId, request.auth.sub, participantId]
       );
-      if (existing.rows[0]) throw new AppError(409, 'call_in_progress', 'A call is already in progress between these users');
+      const replacedCallId = existing.rows[0]?.id ?? null;
+      if (replacedCallId) {
+        await client.query(
+          `UPDATE calls
+           SET status = 'ended', ended_at = now(), ended_by = $2,
+               end_reason = 'replaced', updated_at = now()
+           WHERE id = $1`,
+          [replacedCallId, request.auth.sub]
+        );
+        await client.query(
+          `INSERT INTO call_events (call_id, user_id, event_type, metadata)
+           VALUES ($1, $2, 'ended', jsonb_build_object('reason', 'replaced'))`,
+          [replacedCallId, request.auth.sub]
+        );
+      }
 
       const roomName = `bizchat-${request.auth.companyId}-${randomUUID()}`;
       const created = await client.query(
@@ -150,9 +165,15 @@ export function createCallsRouter(db) {
                 ($1, $4, 'ringing', '{}'::jsonb)`,
         [nextCall.id, request.auth.sub, callType, participantId]
       );
-      return { ...nextCall, participant_ids: [request.auth.sub, participantId] };
+      return {
+        call: { ...nextCall, participant_ids: [request.auth.sub, participantId] },
+        replacedCallId,
+      };
     });
 
+    if (replacedCallId) {
+      emitCallUpdate(request, call.participant_ids, 'call:updated', { id: replacedCallId, status: 'ended', end_reason: 'replaced' });
+    }
     emitCallUpdate(request, call.participant_ids, 'call:incoming', call);
     db.query(
       `SELECT u.first_name, u.last_name,

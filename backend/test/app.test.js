@@ -284,6 +284,45 @@ test('users can start a call without an ambiguous PostgreSQL call-type parameter
   assert.match(eventQuery, /\$3::text/);
 });
 
+test('starting a new call replaces an abandoned active call between the same users', async () => {
+  const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
+  const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
+  const participantId = '93fced7f-83eb-4bb9-90c6-1095f0761fb8';
+  const conversationId = '27a87832-8c4f-4971-843a-a92de1149263';
+  const abandonedCallId = '190c2c72-dc3b-4f47-a761-08cfec1d55c8';
+  const nextCallId = 'f60b14a4-a95f-46bb-95cf-8ec0f385ea9b';
+  const token = jwt.sign({ sub: userId, companyId, role: 'user' }, env.JWT_SECRET);
+  let replacementValues;
+  const client = {
+    async query(sql, values) {
+      if (sql.includes('SELECT c.id, target.first_name')) return { rows: [{ id: conversationId }] };
+      if (sql.includes('FOR UPDATE OF c')) return { rows: [{ id: abandonedCallId }] };
+      if (sql.includes("SET status = 'ended'")) {
+        replacementValues = values;
+        return { rows: [] };
+      }
+      if (sql.includes('INSERT INTO calls')) {
+        return { rows: [{ id: nextCallId, company_id: companyId, conversation_id: conversationId, created_by: userId, call_type: 'audio', status: 'ringing' }] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const db = {
+    async query() { return { rows: [] }; },
+    async connect() { return client; },
+  };
+
+  const response = await request(createApp(db))
+    .post('/api/calls')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ conversationId, participantId, callType: 'audio' });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.call.id, nextCallId);
+  assert.deepEqual(replacementValues, [abandonedCallId, userId]);
+});
+
 test('users can end a call without ambiguous PostgreSQL status or reason values', async () => {
   const companyId = '9ed485e6-054f-4c3f-8d98-0b0f55662d72';
   const userId = '6975b187-ad72-42df-bb73-85ea968c5722';
